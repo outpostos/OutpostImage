@@ -17,15 +17,15 @@ development_status:
   1-4-structured-logging: done
   epic-1-retrospective: optional
 
-  epic-2: in-progress
+  epic-2: done
   2-1-store-interface: done
   2-2-docker-overlay2-store: done
   2-3-state-tracker: done
-  2-4-digest-query-api: ready-for-dev
+  2-4-digest-query-api: done
   epic-2-retrospective: optional
 
-  epic-3: backlog
-  3-1-oci-version-check: backlog
+  epic-3: in-progress
+  3-1-oci-version-check: ready-for-dev
   3-2-manifest-api: backlog
   3-3-blob-api: backlog
   3-4-oci-error-response: backlog
