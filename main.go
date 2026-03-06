@@ -97,7 +97,7 @@ func run(cmd *RegistryCmd) error {
 	registryMux.HandleFunc("GET /healthz", httpx.HandleHealthz())
 	registryMux.HandleFunc("GET /readyz", httpx.HandleReadyz())
 	// TODO(E3): Register OCI Distribution API handlers
-	httpx.Serve(ctx, g, cmd.RegistryAddr, registryMux, "registry")
+	httpx.Serve(ctx, g, cmd.RegistryAddr, httpx.LoggingMiddleware(registryMux), "registry")
 
 	// TODO(E4): HTTP Proxy server (cmd.ProxyAddr)
 
@@ -105,7 +105,7 @@ func run(cmd *RegistryCmd) error {
 	metricsMux := http.NewServeMux()
 	metricsMux.HandleFunc("GET /healthz", httpx.HandleHealthz())
 	// TODO(E6): Register /metrics handler (prometheus)
-	httpx.Serve(ctx, g, cmd.MetricsAddr, metricsMux, "metrics")
+	httpx.Serve(ctx, g, cmd.MetricsAddr, httpx.LoggingMiddleware(metricsMux), "metrics")
 
 	return g.Wait()
 }
