@@ -12,8 +12,8 @@
 development_status:
   epic-1: in-progress
   1-1-project-init: done
-  1-2-config-management: in-progress
-  1-3-http-server-skeleton: backlog
+  1-2-config-management: done
+  1-3-http-server-skeleton: ready-for-dev
   1-4-structured-logging: backlog
   epic-1-retrospective: optional
 
