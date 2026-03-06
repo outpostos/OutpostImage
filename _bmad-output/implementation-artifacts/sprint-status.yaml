@@ -24,15 +24,15 @@ development_status:
   2-4-digest-query-api: done
   epic-2-retrospective: optional
 
-  epic-3: in-progress
-  3-1-oci-version-check: ready-for-dev
-  3-2-manifest-api: backlog
-  3-3-blob-api: backlog
-  3-4-oci-error-response: backlog
+  epic-3: done
+  3-1-oci-version-check: done
+  3-2-manifest-api: done
+  3-3-blob-api: done
+  3-4-oci-error-response: done
   epic-3-retrospective: optional
 
-  epic-4: backlog
-  4-1-http-proxy-server: backlog
+  epic-4: in-progress
+  4-1-http-proxy-server: ready-for-dev
   4-2-dynamic-https-cert: backlog
   4-3-request-routing: backlog
   4-4-docker-daemon-integration: backlog
