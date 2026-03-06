@@ -1,7 +1,7 @@
 .PHONY: build test lint clean
 
 build:
-	go build -o bin/outpostimage .
+	go build -buildvcs=false -o bin/outpostimage .
 
 test:
 	go test ./...
