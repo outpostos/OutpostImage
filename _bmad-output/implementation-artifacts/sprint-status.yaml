@@ -10,15 +10,15 @@
 # Story: backlog | ready-for-dev | in-progress | review | done
 
 development_status:
-  epic-1: in-progress
+  epic-1: done
   1-1-project-init: done
   1-2-config-management: done
   1-3-http-server-skeleton: done
-  1-4-structured-logging: ready-for-dev
+  1-4-structured-logging: done
   epic-1-retrospective: optional
 
-  epic-2: backlog
-  2-1-store-interface: backlog
+  epic-2: in-progress
+  2-1-store-interface: ready-for-dev
   2-2-docker-overlay2-store: backlog
   2-3-state-tracker: backlog
   2-4-digest-query-api: backlog
