@@ -1,0 +1,259 @@
+package oci
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/opencontainers/go-digest"
+)
+
+// setupDockerFixture creates a minimal Docker overlay2 directory structure for testing.
+func setupDockerFixture(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+
+	// Create directory structure
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+	layerdbDir := filepath.Join(root, "image", "overlay2", "layerdb", "sha256")
+	os.MkdirAll(imagedbDir, 0755)
+	os.MkdirAll(layerdbDir, 0755)
+
+	// Create a fake image config
+	imageConfig := map[string]any{
+		"architecture": "amd64",
+		"os":           "linux",
+		"rootfs": map[string]any{
+			"type":     "layers",
+			"diff_ids": []string{"sha256:aaaa000000000000000000000000000000000000000000000000000000000000"},
+		},
+	}
+	configData, _ := json.Marshal(imageConfig)
+	configDigest := digest.FromBytes(configData)
+	configHash := configDigest.Encoded()
+
+	os.WriteFile(filepath.Join(imagedbDir, configHash), configData, 0644)
+
+	// Create repositories.json
+	repos := map[string]any{
+		"Repositories": map[string]any{
+			"nginx": map[string]string{
+				"nginx:latest":                       configDigest.String(),
+				"nginx@" + configDigest.String():     configDigest.String(),
+			},
+		},
+	}
+	reposData, _ := json.Marshal(repos)
+	os.WriteFile(filepath.Join(root, "image", "overlay2", "repositories.json"), reposData, 0644)
+
+	// Create a layer entry in layerdb
+	diffID := "aaaa000000000000000000000000000000000000000000000000000000000000"
+	// First layer: chainID == diffID
+	chainDir := filepath.Join(layerdbDir, diffID)
+	os.MkdirAll(chainDir, 0755)
+	os.WriteFile(filepath.Join(chainDir, "diff"), []byte("sha256:"+diffID), 0644)
+	os.WriteFile(filepath.Join(chainDir, "cache-id"), []byte("cache-abc123"), 0644)
+	os.WriteFile(filepath.Join(chainDir, "size"), []byte("1024"), 0644)
+
+	return root
+}
+
+func TestDockerStore_Init(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if store.Name() != "docker" {
+		t.Fatalf("Name() = %q, want %q", store.Name(), "docker")
+	}
+}
+
+func TestDockerStore_ListImages(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	images, err := store.ListImages(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(images) != 1 {
+		t.Fatalf("got %d images, want 1", len(images))
+	}
+
+	img := images[0]
+	found := false
+	for _, tag := range img.RepoTags {
+		if tag == "nginx:latest" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected nginx:latest in tags, got %v", img.RepoTags)
+	}
+}
+
+func TestDockerStore_Resolve(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	store.Init(context.Background())
+
+	dgst, err := store.Resolve(context.Background(), "nginx:latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dgst == "" {
+		t.Fatal("expected non-empty digest")
+	}
+
+	_, err = store.Resolve(context.Background(), "nonexistent:latest")
+	if err == nil {
+		t.Fatal("expected error for nonexistent ref")
+	}
+}
+
+func TestDockerStore_GetManifest(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	store.Init(context.Background())
+
+	dgst, _ := store.Resolve(context.Background(), "nginx:latest")
+	data, mediaType, err := store.GetManifest(context.Background(), dgst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) == 0 {
+		t.Fatal("expected non-empty manifest data")
+	}
+	if mediaType == "" {
+		t.Fatal("expected non-empty media type")
+	}
+
+	// Verify it's valid JSON
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("manifest is not valid JSON: %v", err)
+	}
+}
+
+func TestDockerStore_GetBlob(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	store.Init(context.Background())
+
+	dgst, _ := store.Resolve(context.Background(), "nginx:latest")
+	reader, size, err := store.GetBlob(context.Background(), dgst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+
+	if size <= 0 {
+		t.Fatalf("expected positive size, got %d", size)
+	}
+}
+
+func TestDockerStore_HasBlob(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	store.Init(context.Background())
+
+	dgst, _ := store.Resolve(context.Background(), "nginx:latest")
+	if !store.HasBlob(context.Background(), dgst) {
+		t.Fatal("expected HasBlob to return true for existing config digest")
+	}
+
+	fakeDgst, _ := digest.Parse("sha256:0000000000000000000000000000000000000000000000000000000000000000")
+	if store.HasBlob(context.Background(), fakeDgst) {
+		t.Fatal("expected HasBlob to return false for nonexistent digest")
+	}
+}
+
+func TestDockerStore_HasBlob_Layer(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	store.Init(context.Background())
+
+	layerDgst, _ := digest.Parse("sha256:aaaa000000000000000000000000000000000000000000000000000000000000")
+	if !store.HasBlob(context.Background(), layerDgst) {
+		t.Fatal("expected HasBlob to return true for existing layer diffID")
+	}
+}
+
+func TestComputeChainID(t *testing.T) {
+	tests := []struct {
+		name    string
+		diffIDs []digest.Digest
+		want    int
+	}{
+		{
+			name:    "empty",
+			diffIDs: nil,
+			want:    0,
+		},
+		{
+			name: "single layer",
+			diffIDs: []digest.Digest{
+				digest.Digest("sha256:aaaa000000000000000000000000000000000000000000000000000000000000"),
+			},
+			want: 1,
+		},
+		{
+			name: "two layers",
+			diffIDs: []digest.Digest{
+				digest.Digest("sha256:aaaa000000000000000000000000000000000000000000000000000000000000"),
+				digest.Digest("sha256:bbbb000000000000000000000000000000000000000000000000000000000000"),
+			},
+			want: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chainIDs := ComputeChainID(tt.diffIDs)
+			if len(chainIDs) != tt.want {
+				t.Fatalf("got %d chainIDs, want %d", len(chainIDs), tt.want)
+			}
+			if tt.want > 0 {
+				// First chainID should equal first diffID
+				if chainIDs[0] != tt.diffIDs[0] {
+					t.Errorf("first chainID %s != first diffID %s", chainIDs[0], tt.diffIDs[0])
+				}
+			}
+			if tt.want > 1 {
+				// Second chainID should differ from second diffID
+				if chainIDs[1] == tt.diffIDs[1] {
+					t.Error("second chainID should differ from second diffID")
+				}
+			}
+		})
+	}
+}
+
+func TestDockerStore_EmptyRoot(t *testing.T) {
+	root := t.TempDir()
+	store := NewDockerStore(root)
+
+	// Should not error on missing directories
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	images, err := store.ListImages(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(images) != 0 {
+		t.Fatalf("expected 0 images, got %d", len(images))
+	}
+}
