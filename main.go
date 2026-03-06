@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,6 +12,7 @@ import (
 	"github.com/alexflint/go-arg"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/outpostos/outpostimage/pkg/httpx"
 	"github.com/outpostos/outpostimage/pkg/routing"
 )
 
@@ -88,17 +90,22 @@ func run(cmd *RegistryCmd) error {
 	// TODO(E2): Initialize Store (containerd/docker adapter)
 	// TODO(E5): Initialize Router (StaticRouter, use pw)
 	// TODO(E2): g.Go: state.Track(ctx, store, router)
-	// TODO(E3): g.Go: registry server (cmd.RegistryAddr)
-	// TODO(E4): g.Go: proxy server (cmd.ProxyAddr)
-	// TODO(E6): g.Go: metrics server (cmd.MetricsAddr)
 	_ = pw // TODO: pass to Router when implemented
 
-	// Placeholder: wait for context cancellation
-	g.Go(func() error {
-		<-ctx.Done()
-		slog.Info("shutting down")
-		return nil
-	})
+	// Registry server (:5000) - OCI Distribution API + health checks
+	registryMux := http.NewServeMux()
+	registryMux.HandleFunc("GET /healthz", httpx.HandleHealthz())
+	registryMux.HandleFunc("GET /readyz", httpx.HandleReadyz())
+	// TODO(E3): Register OCI Distribution API handlers
+	httpx.Serve(ctx, g, cmd.RegistryAddr, registryMux, "registry")
+
+	// TODO(E4): HTTP Proxy server (cmd.ProxyAddr)
+
+	// Metrics server (:9090) - Prometheus metrics + health check
+	metricsMux := http.NewServeMux()
+	metricsMux.HandleFunc("GET /healthz", httpx.HandleHealthz())
+	// TODO(E6): Register /metrics handler (prometheus)
+	httpx.Serve(ctx, g, cmd.MetricsAddr, metricsMux, "metrics")
 
 	return g.Wait()
 }
