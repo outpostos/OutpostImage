@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/outpostos/outpostimage/pkg/httpx"
+	"github.com/outpostos/outpostimage/pkg/metrics"
 	"github.com/outpostos/outpostimage/pkg/oci"
 	"github.com/outpostos/outpostimage/pkg/proxy"
 	"github.com/outpostos/outpostimage/pkg/registry"
@@ -121,12 +122,14 @@ func run(cmd *RegistryCmd) error {
 	digestHandler := registry.NewDigestHandler(tracker)
 	digestHandler.RegisterRoutes(registryMux)
 
-	httpx.Serve(ctx, g, cmd.RegistryAddr, httpx.LoggingMiddleware(registryMux), "registry")
+	registryHandler := metrics.NewMiddleware("registry")(registryMux)
+	httpx.Serve(ctx, g, cmd.RegistryAddr, registryHandler, "registry")
 
 	// HTTP Proxy server (:3128) - intercepts OCI registry traffic
 	interceptor := proxy.RequestRouter(tracker, cmd.RegistryAddr)
 	p := proxy.NewProxy(interceptor)
-	httpx.Serve(ctx, g, cmd.ProxyAddr, httpx.LoggingMiddleware(p), "proxy")
+	proxyHandler := metrics.NewMiddleware("proxy")(p)
+	httpx.Serve(ctx, g, cmd.ProxyAddr, proxyHandler, "proxy")
 
 	// Initialize CA for HTTPS MITM (used when CONNECT tunneling is needed)
 	caDir := cmd.CADir
@@ -144,8 +147,9 @@ func run(cmd *RegistryCmd) error {
 	// Metrics server (:9090) - Prometheus metrics + health check
 	metricsMux := http.NewServeMux()
 	metricsMux.HandleFunc("GET /healthz", httpx.HandleHealthz())
-	// TODO(E6): Register /metrics handler (prometheus)
-	httpx.Serve(ctx, g, cmd.MetricsAddr, httpx.LoggingMiddleware(metricsMux), "metrics")
+	metricsMux.Handle("GET /metrics", metrics.Handler())
+	metricsHandler := metrics.NewMiddleware("metrics")(metricsMux)
+	httpx.Serve(ctx, g, cmd.MetricsAddr, metricsHandler, "metrics")
 
 	_ = router // Router is used by RunHealthCheck goroutine; future: pass to proxy for P2P lookup
 
