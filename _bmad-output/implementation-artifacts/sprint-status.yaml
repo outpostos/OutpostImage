@@ -46,9 +46,9 @@ development_status:
   5-5-fallback-backoff: done
   epic-5-retrospective: optional
 
-  epic-6: backlog
-  6-1-prometheus-metrics: backlog
-  6-2-dockerfile: backlog
+  epic-6: in-progress
+  6-1-prometheus-metrics: done
+  6-2-dockerfile: done
   6-3-k8s-daemonset: backlog
   6-4-e2e-integration-test: backlog
   epic-6-retrospective: optional
