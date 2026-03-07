@@ -38,12 +38,12 @@ development_status:
   4-4-docker-daemon-integration: done
   epic-4-retrospective: optional
 
-  epic-5: in-progress
-  5-1-router-interface-static: ready-for-dev
-  5-2-health-check: backlog
-  5-3-remote-digest-query: backlog
-  5-4-balancer-p2p-pull: backlog
-  5-5-fallback-backoff: backlog
+  epic-5: done
+  5-1-router-interface-static: done
+  5-2-health-check: done
+  5-3-remote-digest-query: done
+  5-4-balancer-p2p-pull: done
+  5-5-fallback-backoff: done
   epic-5-retrospective: optional
 
   epic-6: backlog

@@ -7,13 +7,19 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/alexflint/go-arg"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/outpostos/outpostimage/pkg/httpx"
+	"github.com/outpostos/outpostimage/pkg/oci"
+	"github.com/outpostos/outpostimage/pkg/proxy"
+	"github.com/outpostos/outpostimage/pkg/registry"
 	"github.com/outpostos/outpostimage/pkg/routing"
+	"github.com/outpostos/outpostimage/pkg/state"
 )
 
 // RegistryCmd is the main subcommand that runs the OutpostImage service.
@@ -25,6 +31,7 @@ type RegistryCmd struct {
 	Peers        []string `arg:"--peers,env:PEERS,separate" help:"Static peer list (host:port)"`
 	PeersFile    string   `arg:"--peers-file,env:PEERS_FILE" help:"Path to peers file for hot-reload"`
 	LogLevel     string   `arg:"--log-level,env:LOG_LEVEL" default:"INFO" help:"Log level (DEBUG, INFO, WARN, ERROR)"`
+	CADir        string   `arg:"--ca-dir,env:CA_DIR" default:"/etc/outpostimage" help:"Directory for CA certificate and key"`
 }
 
 // Args holds the top-level CLI arguments with subcommands.
@@ -77,35 +84,70 @@ func run(cmd *RegistryCmd) error {
 
 	g, ctx := errgroup.WithContext(ctx)
 
+	// Initialize Docker store
+	store := oci.NewDockerStore(cmd.DockerRoot)
+	if err := store.Init(ctx); err != nil {
+		slog.Warn("docker store init failed (will retry via tracker)", "error", err)
+	}
+
+	// Initialize State Tracker - maintains in-memory digest index
+	tracker := state.NewTracker(store)
+	g.Go(func() error {
+		return tracker.Track(ctx)
+	})
+
 	// Initialize PeerWatcher with CLI peers
 	pw := routing.NewPeerWatcher(cmd.Peers)
-
-	// If peers-file is specified, watch it for hot-reload
 	if cmd.PeersFile != "" {
 		g.Go(func() error {
 			return pw.WatchFile(ctx, cmd.PeersFile)
 		})
 	}
 
-	// TODO(E2): Initialize Store (containerd/docker adapter)
-	// TODO(E5): Initialize Router (StaticRouter, use pw)
-	// TODO(E2): g.Go: state.Track(ctx, store, router)
-	_ = pw // TODO: pass to Router when implemented
+	// Initialize P2P Router with health checking
+	router := routing.NewStaticRouter(pw)
+	g.Go(func() error {
+		return router.RunHealthCheck(ctx, 30*time.Second)
+	})
 
-	// Registry server (:5000) - OCI Distribution API + health checks
+	// Registry server (:5000) - OCI Distribution API + digest query + health checks
 	registryMux := http.NewServeMux()
 	registryMux.HandleFunc("GET /healthz", httpx.HandleHealthz())
 	registryMux.HandleFunc("GET /readyz", httpx.HandleReadyz())
-	// TODO(E3): Register OCI Distribution API handlers
+
+	ociHandler := registry.NewOCIHandler(store)
+	ociHandler.RegisterRoutes(registryMux)
+
+	digestHandler := registry.NewDigestHandler(tracker)
+	digestHandler.RegisterRoutes(registryMux)
+
 	httpx.Serve(ctx, g, cmd.RegistryAddr, httpx.LoggingMiddleware(registryMux), "registry")
 
-	// TODO(E4): HTTP Proxy server (cmd.ProxyAddr)
+	// HTTP Proxy server (:3128) - intercepts OCI registry traffic
+	interceptor := proxy.RequestRouter(tracker, cmd.RegistryAddr)
+	p := proxy.NewProxy(interceptor)
+	httpx.Serve(ctx, g, cmd.ProxyAddr, httpx.LoggingMiddleware(p), "proxy")
+
+	// Initialize CA for HTTPS MITM (used when CONNECT tunneling is needed)
+	caDir := cmd.CADir
+	if err := os.MkdirAll(caDir, 0o755); err != nil {
+		slog.Warn("failed to create CA directory", "dir", caDir, "error", err)
+	}
+	certMgr, err := proxy.NewCertManager(caDir)
+	if err != nil {
+		slog.Warn("cert manager init failed (HTTPS interception disabled)", "error", err)
+	} else {
+		slog.Info("CA certificate loaded", "path", filepath.Join(caDir, "ca.crt"))
+		_ = certMgr // TODO: wire into CONNECT handler for HTTPS MITM
+	}
 
 	// Metrics server (:9090) - Prometheus metrics + health check
 	metricsMux := http.NewServeMux()
 	metricsMux.HandleFunc("GET /healthz", httpx.HandleHealthz())
 	// TODO(E6): Register /metrics handler (prometheus)
 	httpx.Serve(ctx, g, cmd.MetricsAddr, httpx.LoggingMiddleware(metricsMux), "metrics")
+
+	_ = router // Router is used by RunHealthCheck goroutine; future: pass to proxy for P2P lookup
 
 	return g.Wait()
 }
