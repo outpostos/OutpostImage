@@ -31,15 +31,15 @@ development_status:
   3-4-oci-error-response: done
   epic-3-retrospective: optional
 
-  epic-4: in-progress
-  4-1-http-proxy-server: ready-for-dev
-  4-2-dynamic-https-cert: backlog
-  4-3-request-routing: backlog
-  4-4-docker-daemon-integration: backlog
+  epic-4: done
+  4-1-http-proxy-server: done
+  4-2-dynamic-https-cert: done
+  4-3-request-routing: done
+  4-4-docker-daemon-integration: done
   epic-4-retrospective: optional
 
-  epic-5: backlog
-  5-1-router-interface-static: backlog
+  epic-5: in-progress
+  5-1-router-interface-static: ready-for-dev
   5-2-health-check: backlog
   5-3-remote-digest-query: backlog
   5-4-balancer-p2p-pull: backlog
