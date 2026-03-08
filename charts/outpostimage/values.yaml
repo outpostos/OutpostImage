@@ -1,0 +1,37 @@
+image:
+  repository: outpostimage
+  tag: latest
+  pullPolicy: IfNotPresent
+
+config:
+  logLevel: INFO
+  dockerRoot: /var/lib/docker
+  registryAddr: ":5000"
+  proxyAddr: ":3128"
+  metricsAddr: ":9090"
+  caDir: /etc/outpostimage
+  peersFile: /etc/outpostimage/peers.txt
+  # Static peers list (comma-separated), alternative to peersFile
+  # peers: "node1:5000,node2:5000"
+
+# Peers configuration - content for the peers.txt file
+# Each line is a peer address in host:port format
+peers: ""
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  namespace: ""
+
+tolerations:
+  - operator: Exists
+
+nodeSelector: {}
