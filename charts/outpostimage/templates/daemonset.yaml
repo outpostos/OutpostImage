@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/name: outpostimage
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: outpostimage
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: outpostimage
+        app.kubernetes.io/instance: {{ .Release.Name }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: outpostimage
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["registry"]
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-config
+          ports:
+            - name: registry
+              containerPort: 5000
+              hostPort: 5000
+              protocol: TCP
+            - name: proxy
+              containerPort: 3128
+              hostPort: 3128
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              hostPort: 9090
+              protocol: TCP
+          volumeMounts:
+            - name: docker-storage
+              mountPath: {{ .Values.config.dockerRoot }}
+              readOnly: true
+            - name: ca-certs
+              mountPath: {{ .Values.config.caDir }}
+            - name: peers
+              mountPath: /etc/outpostimage/peers.txt
+              subPath: peers.txt
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: docker-storage
+          hostPath:
+            path: {{ .Values.config.dockerRoot }}
+            type: Directory
+        - name: ca-certs
+          emptyDir: {}
+        - name: peers
+          configMap:
+            name: {{ .Release.Name }}-config
+            items:
+              - key: peers.txt
+                path: peers.txt
