@@ -25,14 +25,16 @@ import (
 
 // RegistryCmd is the main subcommand that runs the OutpostImage service.
 type RegistryCmd struct {
-	RegistryAddr string   `arg:"--registry-addr,env:REGISTRY_ADDR" default:":5000" help:"P2P Registry API listen address"`
-	ProxyAddr    string   `arg:"--proxy-addr,env:PROXY_ADDR" default:":3128" help:"HTTP Proxy listen address"`
-	MetricsAddr  string   `arg:"--metrics-addr,env:METRICS_ADDR" default:":9090" help:"Metrics listen address"`
-	DockerRoot   string   `arg:"--docker-root,env:DOCKER_ROOT" default:"/var/lib/docker" help:"Docker storage root directory"`
-	Peers        []string `arg:"--peers,env:PEERS,separate" help:"Static peer list (host:port)"`
-	PeersFile    string   `arg:"--peers-file,env:PEERS_FILE" help:"Path to peers file for hot-reload"`
-	LogLevel     string   `arg:"--log-level,env:LOG_LEVEL" default:"INFO" help:"Log level (DEBUG, INFO, WARN, ERROR)"`
-	CADir        string   `arg:"--ca-dir,env:CA_DIR" default:"/etc/outpostimage" help:"Directory for CA certificate and key"`
+	RegistryAddr   string   `arg:"--registry-addr,env:REGISTRY_ADDR" default:":5000" help:"P2P Registry API listen address"`
+	ProxyAddr      string   `arg:"--proxy-addr,env:PROXY_ADDR" default:":3128" help:"HTTP Proxy listen address"`
+	MetricsAddr    string   `arg:"--metrics-addr,env:METRICS_ADDR" default:":9090" help:"Metrics listen address"`
+	DockerRoot     string   `arg:"--docker-root,env:DOCKER_ROOT" default:"/var/lib/docker" help:"Docker storage root directory"`
+	ContainerdRoot string   `arg:"--containerd-root,env:CONTAINERD_ROOT" default:"/var/lib/containerd" help:"Containerd storage root directory"`
+	StoreType      string   `arg:"--store-type,env:STORE_TYPE" default:"auto" help:"Store type: auto, docker, containerd"`
+	Peers          []string `arg:"--peers,env:PEERS,separate" help:"Static peer list (host:port)"`
+	PeersFile      string   `arg:"--peers-file,env:PEERS_FILE" help:"Path to peers file for hot-reload"`
+	LogLevel       string   `arg:"--log-level,env:LOG_LEVEL" default:"INFO" help:"Log level (DEBUG, INFO, WARN, ERROR)"`
+	CADir          string   `arg:"--ca-dir,env:CA_DIR" default:"/etc/outpostimage" help:"Directory for CA certificate and key"`
 }
 
 // Args holds the top-level CLI arguments with subcommands.
@@ -73,7 +75,9 @@ func run(cmd *RegistryCmd) error {
 		"registry_addr", cmd.RegistryAddr,
 		"proxy_addr", cmd.ProxyAddr,
 		"metrics_addr", cmd.MetricsAddr,
+		"store_type", cmd.StoreType,
 		"docker_root", cmd.DockerRoot,
+		"containerd_root", cmd.ContainerdRoot,
 		"peers", cmd.Peers,
 		"peers_file", cmd.PeersFile,
 		"log_level", cmd.LogLevel,
@@ -85,11 +89,8 @@ func run(cmd *RegistryCmd) error {
 
 	g, ctx := errgroup.WithContext(ctx)
 
-	// Initialize Docker store
-	store := oci.NewDockerStore(cmd.DockerRoot)
-	if err := store.Init(ctx); err != nil {
-		slog.Warn("docker store init failed (will retry via tracker)", "error", err)
-	}
+	// Initialize store based on --store-type
+	store := initStore(ctx, cmd)
 
 	// Initialize State Tracker - maintains in-memory digest index
 	tracker := state.NewTracker(store)
@@ -154,6 +155,36 @@ func run(cmd *RegistryCmd) error {
 	_ = router // Router is used by RunHealthCheck goroutine; future: pass to proxy for P2P lookup
 
 	return g.Wait()
+}
+
+func initStore(ctx context.Context, cmd *RegistryCmd) oci.Store {
+	switch cmd.StoreType {
+	case "docker":
+		ds := oci.NewDockerStore(cmd.DockerRoot)
+		if err := ds.Init(ctx); err != nil {
+			slog.Warn("docker store init failed (will retry via tracker)", "error", err)
+		}
+		return ds
+	case "containerd":
+		cs := oci.NewContainerdStore(cmd.ContainerdRoot)
+		if err := cs.Init(ctx); err != nil {
+			slog.Warn("containerd store init failed (will retry via tracker)", "error", err)
+		}
+		return cs
+	default: // "auto"
+		stores := oci.DetectStores(ctx, cmd.DockerRoot, cmd.ContainerdRoot)
+		if len(stores) == 0 {
+			slog.Warn("no container runtime stores detected, using empty docker store")
+			ds := oci.NewDockerStore(cmd.DockerRoot)
+			_ = ds.Init(ctx)
+			return ds
+		}
+		if len(stores) == 1 {
+			return stores[0]
+		}
+		slog.Info("multiple stores detected, using MultiStore", "count", len(stores))
+		return oci.NewMultiStore(stores...)
+	}
 }
 
 func parseLogLevel(s string) slog.Level {
