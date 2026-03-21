@@ -103,6 +103,40 @@ type testNode struct {
 	server  *http.Server
 }
 
+// startTestNodeWithStore creates a test node with a custom store.
+func startTestNodeWithStore(t *testing.T, name string, store oci.Store) *testNode {
+	t.Helper()
+
+	tracker := state.NewTracker(store)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", httpx.HandleHealthz())
+	mux.HandleFunc("GET /readyz", httpx.HandleReadyz())
+
+	ociHandler := registry.NewOCIHandler(store)
+	ociHandler.RegisterRoutes(mux)
+
+	digestHandler := registry.NewDigestHandler(tracker)
+	digestHandler.RegisterRoutes(mux)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	addr := listener.Addr().String()
+
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(listener)
+
+	return &testNode{
+		name:    name,
+		store:   nil, // not a mockStore
+		tracker: tracker,
+		addr:    addr,
+		server:  srv,
+	}
+}
+
 // startTestNode creates and starts a test node with its own HTTP server.
 func startTestNode(t *testing.T, name string) *testNode {
 	t.Helper()
