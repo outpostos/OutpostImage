@@ -175,7 +175,8 @@ func run(cmd *RegistryCmd) error {
 	httpx.Serve(ctx, g, cmd.RegistryAddr, registryHandler, "registry")
 
 	// HTTP Proxy server (:3128) - intercepts OCI registry traffic
-	interceptor := proxy.RequestRouter(tracker, cmd.RegistryAddr)
+	// Pass router for P2P blob fetch from remote peers
+	interceptor := proxy.RequestRouter(tracker, cmd.RegistryAddr, router)
 	p := proxy.NewProxy(interceptor)
 	proxyHandler := metrics.NewMiddleware("proxy")(p)
 	httpx.Serve(ctx, g, cmd.ProxyAddr, proxyHandler, "proxy")
@@ -224,7 +225,7 @@ func run(cmd *RegistryCmd) error {
 	metricsHandler := metrics.NewMiddleware("metrics")(metricsMux)
 	httpx.Serve(ctx, g, cmd.MetricsAddr, metricsHandler, "metrics")
 
-	_ = router // Router is used by RunHealthCheck goroutine; future: pass to proxy for P2P lookup
+	// router is used by RunHealthCheck goroutine and P2P blob fetch interceptor
 
 	return g.Wait()
 }
