@@ -52,3 +52,30 @@ development_status:
   6-3-k8s-daemonset: done
   6-4-e2e-integration-test: done
   epic-6-retrospective: optional
+
+  # Phase 2
+
+  epic-7: done
+  7-1-containerd-content-store-reader: done
+  7-2-containerd-store-event-subscription: done
+  7-3-multi-store-unified-abstraction: done
+  7-4-store-selection-cli-config: done
+  epic-7-retrospective: optional
+
+  epic-8: done
+  8-1-mdns-service-broadcast: done
+  8-2-mdns-node-discovery: done
+  8-3-mdns-health-integration-cli: done
+  epic-8-retrospective: optional
+
+  epic-9: done
+  9-1-embedded-dns-server: done
+  9-2-https-mitm-certmanager: done
+  9-3-dns-mode-cli-deployment: done
+  epic-9-retrospective: optional
+
+  epic-10: done
+  10-1-latency-aware-node-selection: done
+  10-2-http-range-request-support: done
+  10-3-parallel-p2p-blob-fetch: done
+  epic-10-retrospective: optional
