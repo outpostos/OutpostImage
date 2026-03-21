@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/opencontainers/go-digest"
@@ -121,10 +122,11 @@ func (h *OCIHandler) handleHeadBlob(w http.ResponseWriter, r *http.Request, dgst
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Docker-Content-Digest", dgst.String())
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", size))
+	w.Header().Set("Accept-Ranges", "bytes")
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleGetBlob implements GET /v2/{name}/blobs/{digest}.
+// handleGetBlob implements GET /v2/{name}/blobs/{digest} with Range request support.
 func (h *OCIHandler) handleGetBlob(w http.ResponseWriter, r *http.Request, dgstStr string) {
 	dgst, err := digest.Parse(dgstStr)
 	if err != nil {
@@ -139,10 +141,93 @@ func (h *OCIHandler) handleGetBlob(w http.ResponseWriter, r *http.Request, dgstS
 	}
 	defer reader.Close()
 
-	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Docker-Content-Digest", dgst.String())
+	w.Header().Set("Accept-Ranges", "bytes")
+
+	// Check for Range header
+	rangeHeader := r.Header.Get("Range")
+	if rangeHeader != "" {
+		start, end, ok := parseRangeHeader(rangeHeader, size)
+		if !ok {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", size))
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+
+		// Read full content then serve range (simple implementation)
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+
+		rangeLen := end - start + 1
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", rangeLen))
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, size))
+		w.WriteHeader(http.StatusPartialContent)
+		w.Write(data[start : end+1])
+		return
+	}
+
+	// Full content response
+	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", size))
 	io.Copy(w, reader)
+}
+
+// parseRangeHeader parses a Range header value like "bytes=0-1023" or "bytes=1024-".
+// Returns the start, end (inclusive), and whether the range is valid.
+func parseRangeHeader(rangeHeader string, totalSize int64) (int64, int64, bool) {
+	if !strings.HasPrefix(rangeHeader, "bytes=") {
+		return 0, 0, false
+	}
+
+	rangeSpec := strings.TrimPrefix(rangeHeader, "bytes=")
+	parts := strings.SplitN(rangeSpec, "-", 2)
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+
+	var start, end int64
+
+	if parts[0] == "" {
+		// Suffix range: bytes=-500 (last 500 bytes)
+		suffix, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || suffix <= 0 {
+			return 0, 0, false
+		}
+		start = totalSize - suffix
+		if start < 0 {
+			start = 0
+		}
+		end = totalSize - 1
+	} else {
+		var err error
+		start, err = strconv.ParseInt(parts[0], 10, 64)
+		if err != nil || start < 0 {
+			return 0, 0, false
+		}
+
+		if parts[1] == "" {
+			// Open-ended: bytes=1024-
+			end = totalSize - 1
+		} else {
+			end, err = strconv.ParseInt(parts[1], 10, 64)
+			if err != nil || end < start {
+				return 0, 0, false
+			}
+		}
+	}
+
+	if start >= totalSize {
+		return 0, 0, false
+	}
+	if end >= totalSize {
+		end = totalSize - 1
+	}
+
+	return start, end, true
 }
 
 // writeOCIError writes an OCI Distribution Spec compliant error response.

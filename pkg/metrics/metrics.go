@@ -34,6 +34,9 @@ type Metrics struct {
 	// mDNS metrics
 	MDNSPeersDiscoveredTotal prometheus.Counter
 
+	// Peer latency metrics
+	PeerLatencySeconds *prometheus.GaugeVec
+
 	// DNS metrics
 	DNSQueriesTotal  *prometheus.CounterVec
 	DNSHijackedTotal *prometheus.CounterVec
@@ -145,6 +148,15 @@ func New() *Metrics {
 			},
 		),
 
+		// Peer latency metrics
+		PeerLatencySeconds: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "outpostimage_peer_latency_seconds",
+				Help: "EWMA latency to peer in seconds.",
+			},
+			[]string{"peer"},
+		),
+
 		// DNS metrics
 		DNSQueriesTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -177,6 +189,7 @@ func New() *Metrics {
 		m.ProxyInterceptedTotal,
 		m.ProxyUpstreamTotal,
 		m.MDNSPeersDiscoveredTotal,
+		m.PeerLatencySeconds,
 		m.DNSQueriesTotal,
 		m.DNSHijackedTotal,
 	)

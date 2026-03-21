@@ -34,10 +34,14 @@ type StaticRouter struct {
 	client *http.Client
 
 	mu       sync.RWMutex
-	health   map[string]bool  // peer → healthy
+	health   map[string]bool      // peer → healthy
 	backoff  map[string]time.Time // peer → backoff until
-	failures map[string]int   // peer → consecutive failure count
+	failures map[string]int      // peer → consecutive failure count
+	latency  map[string]float64  // peer → EWMA RTT in seconds
 }
+
+// EWMA smoothing factor: higher = more responsive to recent measurements.
+const ewmaAlpha = 0.3
 
 // NewStaticRouter creates a new StaticRouter backed by the given PeerWatcher.
 func NewStaticRouter(pw *PeerWatcher) *StaticRouter {
@@ -49,6 +53,7 @@ func NewStaticRouter(pw *PeerWatcher) *StaticRouter {
 		health:   make(map[string]bool),
 		backoff:  make(map[string]time.Time),
 		failures: make(map[string]int),
+		latency:  make(map[string]float64),
 	}
 }
 
@@ -66,7 +71,7 @@ func (r *StaticRouter) Ready(_ context.Context) (bool, error) {
 }
 
 // Lookup queries all healthy peers for the given digest and returns a Balancer
-// with the peers that have it.
+// with the peers that have it. The balancer is latency-aware if RTT data is available.
 func (r *StaticRouter) Lookup(ctx context.Context, dgst digest.Digest) (*Balancer, error) {
 	peers := r.healthyPeers()
 	if len(peers) == 0 {
@@ -94,11 +99,37 @@ func (r *StaticRouter) Lookup(ctx context.Context, dgst digest.Digest) (*Balance
 				holders = append(holders, res.peer)
 			}
 		case <-ctx.Done():
-			return NewBalancer(holders), nil
+			return r.buildBalancer(holders), nil
 		}
 	}
 
-	return NewBalancer(holders), nil
+	return r.buildBalancer(holders), nil
+}
+
+// buildBalancer creates a latency-aware balancer from the given peers.
+func (r *StaticRouter) buildBalancer(peers []string) *Balancer {
+	r.mu.RLock()
+	latencies := make(map[string]float64, len(peers))
+	hasLatency := false
+	for _, p := range peers {
+		if rtt, ok := r.latency[p]; ok {
+			latencies[p] = rtt
+			hasLatency = true
+		}
+	}
+	r.mu.RUnlock()
+
+	if hasLatency {
+		return NewLatencyBalancer(peers, latencies)
+	}
+	return NewBalancer(peers)
+}
+
+// PeerLatency returns the EWMA RTT for a peer, or 0 if not available.
+func (r *StaticRouter) PeerLatency(peer string) float64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.latency[peer]
 }
 
 // Advertise is a no-op for StaticRouter (peers discover content via query).
@@ -133,12 +164,18 @@ func (r *StaticRouter) RunHealthCheck(ctx context.Context, interval time.Duratio
 func (r *StaticRouter) checkAllPeers(ctx context.Context) {
 	peers := r.pw.Peers()
 	for _, peer := range peers {
-		healthy := r.checkPeerHealth(ctx, peer)
+		healthy, rtt := r.checkPeerHealth(ctx, peer)
 		r.mu.Lock()
 		if healthy {
 			r.health[peer] = true
 			r.failures[peer] = 0
 			delete(r.backoff, peer)
+			// Update EWMA latency
+			if prev, ok := r.latency[peer]; ok {
+				r.latency[peer] = ewmaAlpha*rtt + (1-ewmaAlpha)*prev
+			} else {
+				r.latency[peer] = rtt
+			}
 		} else {
 			r.failures[peer]++
 			if r.failures[peer] >= 3 {
@@ -151,18 +188,21 @@ func (r *StaticRouter) checkAllPeers(ctx context.Context) {
 	}
 }
 
-func (r *StaticRouter) checkPeerHealth(ctx context.Context, peer string) bool {
+// checkPeerHealth checks a peer's health and returns (healthy, rtt_seconds).
+func (r *StaticRouter) checkPeerHealth(ctx context.Context, peer string) (bool, float64) {
 	url := fmt.Sprintf("http://%s/healthz", peer)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return false
+		return false, 0
 	}
+	start := time.Now()
 	resp, err := r.client.Do(req)
+	rtt := time.Since(start).Seconds()
 	if err != nil {
-		return false
+		return false, 0
 	}
 	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	return resp.StatusCode == http.StatusOK, rtt
 }
 
 func (r *StaticRouter) queryPeerDigest(ctx context.Context, peer string, dgst digest.Digest) bool {
