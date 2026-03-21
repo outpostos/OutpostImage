@@ -68,11 +68,8 @@ development_status:
   8-3-mdns-health-integration-cli: done
   epic-8-retrospective: optional
 
-  epic-9: done
-  9-1-embedded-dns-server: done
-  9-2-https-mitm-certmanager: done
-  9-3-dns-mode-cli-deployment: done
-  epic-9-retrospective: optional
+  epic-9: removed
+  # Epic 9 (DNS hijack + HTTPS MITM) removed: high侵入性, 与 HTTP Proxy 模式功能重叠
 
   epic-10: done
   10-1-latency-aware-node-selection: done

@@ -14,7 +14,6 @@ import (
 	"github.com/alexflint/go-arg"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/outpostos/outpostimage/pkg/dns"
 	"github.com/outpostos/outpostimage/pkg/httpx"
 	"github.com/outpostos/outpostimage/pkg/metrics"
 	"github.com/outpostos/outpostimage/pkg/oci"
@@ -34,15 +33,11 @@ type RegistryCmd struct {
 	StoreType      string   `arg:"--store-type,env:STORE_TYPE" default:"auto" help:"Store type: auto, docker, containerd"`
 	Peers          []string `arg:"--peers,env:PEERS,separate" help:"Static peer list (host:port)"`
 	PeersFile      string   `arg:"--peers-file,env:PEERS_FILE" help:"Path to peers file for hot-reload"`
-	MDNSEnabled      bool     `arg:"--mdns-enabled,env:MDNS_ENABLED" default:"true" help:"Enable mDNS peer discovery"`
-	MDNSInterface    string   `arg:"--mdns-interface,env:MDNS_INTERFACE" help:"Network interface for mDNS"`
-	MDNSDomain       string   `arg:"--mdns-domain,env:MDNS_DOMAIN" default:"local" help:"mDNS domain"`
-	DNSEnabled       bool     `arg:"--dns-enabled,env:DNS_ENABLED" default:"false" help:"Enable embedded DNS server for registry hijacking"`
-	DNSAddr          string   `arg:"--dns-addr,env:DNS_ADDR" default:":5353" help:"DNS server listen address"`
-	DNSHijackDomains []string `arg:"--dns-hijack-domains,env:DNS_HIJACK_DOMAINS,separate" help:"Domains to hijack (default: docker.io,ghcr.io,registry.k8s.io,quay.io)"`
-	DNSGenConfig     string   `arg:"--dns-gen-config,env:DNS_GEN_CONFIG" help:"Generate DNS config snippet (dnsmasq or coredns) and exit"`
-	LogLevel         string   `arg:"--log-level,env:LOG_LEVEL" default:"INFO" help:"Log level (DEBUG, INFO, WARN, ERROR)"`
-	CADir            string   `arg:"--ca-dir,env:CA_DIR" default:"/etc/outpostimage" help:"Directory for CA certificate and key"`
+	MDNSEnabled    bool     `arg:"--mdns-enabled,env:MDNS_ENABLED" default:"true" help:"Enable mDNS peer discovery"`
+	MDNSInterface  string   `arg:"--mdns-interface,env:MDNS_INTERFACE" help:"Network interface for mDNS"`
+	MDNSDomain     string   `arg:"--mdns-domain,env:MDNS_DOMAIN" default:"local" help:"mDNS domain"`
+	LogLevel       string   `arg:"--log-level,env:LOG_LEVEL" default:"INFO" help:"Log level (DEBUG, INFO, WARN, ERROR)"`
+	CADir          string   `arg:"--ca-dir,env:CA_DIR" default:"/etc/outpostimage" help:"Directory for CA certificate and key"`
 }
 
 // Args holds the top-level CLI arguments with subcommands.
@@ -75,23 +70,6 @@ func main() {
 }
 
 func run(cmd *RegistryCmd) error {
-	// Handle --dns-gen-config (print config and exit)
-	if cmd.DNSGenConfig != "" {
-		domains := cmd.DNSHijackDomains
-		if len(domains) == 0 {
-			domains = dns.DefaultHijackDomains
-		}
-		switch cmd.DNSGenConfig {
-		case "dnsmasq":
-			fmt.Print(dns.GenerateDNSMasqConfig(cmd.DNSAddr, domains))
-		case "coredns":
-			fmt.Print(dns.GenerateCoreDNSConfig(cmd.DNSAddr, domains))
-		default:
-			return fmt.Errorf("unknown dns config format: %s (use dnsmasq or coredns)", cmd.DNSGenConfig)
-		}
-		return nil
-	}
-
 	// Configure structured logging
 	level := parseLogLevel(cmd.LogLevel)
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
@@ -105,7 +83,6 @@ func run(cmd *RegistryCmd) error {
 		"containerd_root", cmd.ContainerdRoot,
 		"peers", cmd.Peers,
 		"peers_file", cmd.PeersFile,
-		"dns_enabled", cmd.DNSEnabled,
 		"log_level", cmd.LogLevel,
 	)
 
@@ -181,7 +158,7 @@ func run(cmd *RegistryCmd) error {
 	proxyHandler := metrics.NewMiddleware("proxy")(p)
 	httpx.Serve(ctx, g, cmd.ProxyAddr, proxyHandler, "proxy")
 
-	// Initialize CA for HTTPS MITM (used when CONNECT tunneling is needed)
+	// Initialize CA for HTTPS MITM (reserved for future use)
 	caDir := cmd.CADir
 	if err := os.MkdirAll(caDir, 0o755); err != nil {
 		slog.Warn("failed to create CA directory", "dir", caDir, "error", err)
@@ -191,31 +168,7 @@ func run(cmd *RegistryCmd) error {
 		slog.Warn("cert manager init failed (HTTPS interception disabled)", "error", err)
 	} else {
 		slog.Info("CA certificate loaded", "path", filepath.Join(caDir, "ca.crt"))
-		// Wire CertManager into proxy for HTTPS MITM on registry domains
-		p.SetCertManager(certMgr, dns.DefaultHijackDomains)
-	}
-
-	// Start embedded DNS server if enabled
-	if cmd.DNSEnabled {
-		hijackDomains := cmd.DNSHijackDomains
-		if len(hijackDomains) == 0 {
-			hijackDomains = dns.DefaultHijackDomains
-		}
-		dnsSrv, err := dns.NewServer(dns.ServerConfig{
-			Addr:          cmd.DNSAddr,
-			HijackDomains: hijackDomains,
-		})
-		if err != nil {
-			slog.Warn("DNS server init failed", "error", err)
-		} else {
-			g.Go(func() error {
-				return dnsSrv.Run(ctx)
-			})
-			// Also set MITM domains from DNS hijack config
-			if certMgr != nil {
-				p.SetCertManager(certMgr, hijackDomains)
-			}
-		}
+		_ = certMgr // Reserved for future HTTPS interception
 	}
 
 	// Metrics server (:9090) - Prometheus metrics + health check
@@ -224,8 +177,6 @@ func run(cmd *RegistryCmd) error {
 	metricsMux.Handle("GET /metrics", metrics.Handler())
 	metricsHandler := metrics.NewMiddleware("metrics")(metricsMux)
 	httpx.Serve(ctx, g, cmd.MetricsAddr, metricsHandler, "metrics")
-
-	// router is used by RunHealthCheck goroutine and P2P blob fetch interceptor
 
 	return g.Wait()
 }
