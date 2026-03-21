@@ -33,6 +33,9 @@ type RegistryCmd struct {
 	StoreType      string   `arg:"--store-type,env:STORE_TYPE" default:"auto" help:"Store type: auto, docker, containerd"`
 	Peers          []string `arg:"--peers,env:PEERS,separate" help:"Static peer list (host:port)"`
 	PeersFile      string   `arg:"--peers-file,env:PEERS_FILE" help:"Path to peers file for hot-reload"`
+	MDNSEnabled    bool     `arg:"--mdns-enabled,env:MDNS_ENABLED" default:"true" help:"Enable mDNS peer discovery"`
+	MDNSInterface  string   `arg:"--mdns-interface,env:MDNS_INTERFACE" help:"Network interface for mDNS"`
+	MDNSDomain     string   `arg:"--mdns-domain,env:MDNS_DOMAIN" default:"local" help:"mDNS domain"`
 	LogLevel       string   `arg:"--log-level,env:LOG_LEVEL" default:"INFO" help:"Log level (DEBUG, INFO, WARN, ERROR)"`
 	CADir          string   `arg:"--ca-dir,env:CA_DIR" default:"/etc/outpostimage" help:"Directory for CA certificate and key"`
 }
@@ -104,6 +107,28 @@ func run(cmd *RegistryCmd) error {
 		g.Go(func() error {
 			return pw.WatchFile(ctx, cmd.PeersFile)
 		})
+	}
+
+	// Initialize mDNS peer discovery
+	if cmd.MDNSEnabled {
+		// Extract port from registry addr for mDNS advertisement
+		registryPort := 5000
+		if _, portStr, ok := parseAddr(cmd.RegistryAddr); ok {
+			fmt.Sscanf(portStr, "%d", &registryPort)
+		}
+		mdnsSvc := routing.NewMDNSService(routing.MDNSConfig{
+			Interface: cmd.MDNSInterface,
+			Domain:    cmd.MDNSDomain,
+			Port:      registryPort,
+		})
+		if err := mdnsSvc.Advertise(); err != nil {
+			slog.Warn("mDNS advertise failed", "error", err)
+		} else {
+			g.Go(func() error {
+				defer mdnsSvc.Shutdown()
+				return mdnsSvc.Discover(ctx, pw)
+			})
+		}
 	}
 
 	// Initialize P2P Router with health checking
@@ -185,6 +210,16 @@ func initStore(ctx context.Context, cmd *RegistryCmd) oci.Store {
 		slog.Info("multiple stores detected, using MultiStore", "count", len(stores))
 		return oci.NewMultiStore(stores...)
 	}
+}
+
+// parseAddr splits an address like ":5000" or "0.0.0.0:5000" into host and port.
+func parseAddr(addr string) (string, string, bool) {
+	for i := len(addr) - 1; i >= 0; i-- {
+		if addr[i] == ':' {
+			return addr[:i], addr[i+1:], true
+		}
+	}
+	return addr, "", false
 }
 
 func parseLogLevel(s string) slog.Level {

@@ -30,6 +30,9 @@ type Metrics struct {
 	ProxyRequestsTotal      *prometheus.CounterVec
 	ProxyInterceptedTotal   *prometheus.CounterVec
 	ProxyUpstreamTotal      *prometheus.CounterVec
+
+	// mDNS metrics
+	MDNSPeersDiscoveredTotal prometheus.Counter
 }
 
 // DefaultMetrics returns the default metrics registry.
@@ -129,6 +132,14 @@ func New() *Metrics {
 			},
 			[]string{"type"}, // blob, manifest
 		),
+
+		// mDNS metrics
+		MDNSPeersDiscoveredTotal: prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Name: "outpostimage_mdns_peers_discovered_total",
+				Help: "Total number of peers discovered via mDNS.",
+			},
+		),
 	}
 
 	// Register all metrics with the default registry.
@@ -145,6 +156,7 @@ func New() *Metrics {
 		m.ProxyRequestsTotal,
 		m.ProxyInterceptedTotal,
 		m.ProxyUpstreamTotal,
+		m.MDNSPeersDiscoveredTotal,
 	)
 
 	return m

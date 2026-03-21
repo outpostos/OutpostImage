@@ -13,33 +13,56 @@ import (
 
 // PeerWatcher watches a peers file for changes and provides
 // thread-safe access to the current peer list.
+// It supports both static peers (from CLI/file) and dynamic peers (from mDNS).
 type PeerWatcher struct {
-	mu    sync.RWMutex
-	peers []string
+	mu      sync.RWMutex
+	static  []string // from CLI flags or peers file
+	dynamic []string // from mDNS discovery
 }
 
-// NewPeerWatcher creates a PeerWatcher initialized with the given peers.
+// NewPeerWatcher creates a PeerWatcher initialized with the given static peers.
 func NewPeerWatcher(initial []string) *PeerWatcher {
-	peers := make([]string, len(initial))
-	copy(peers, initial)
-	return &PeerWatcher{peers: peers}
+	static := make([]string, len(initial))
+	copy(static, initial)
+	return &PeerWatcher{static: static}
 }
 
-// Peers returns a copy of the current peer list.
+// Peers returns a deduplicated list of all peers (static + dynamic).
 func (pw *PeerWatcher) Peers() []string {
 	pw.mu.RLock()
 	defer pw.mu.RUnlock()
-	out := make([]string, len(pw.peers))
-	copy(out, pw.peers)
+
+	seen := make(map[string]struct{}, len(pw.static)+len(pw.dynamic))
+	var out []string
+	for _, p := range pw.static {
+		if _, ok := seen[p]; !ok {
+			seen[p] = struct{}{}
+			out = append(out, p)
+		}
+	}
+	for _, p := range pw.dynamic {
+		if _, ok := seen[p]; !ok {
+			seen[p] = struct{}{}
+			out = append(out, p)
+		}
+	}
 	return out
 }
 
-// SetPeers atomically replaces the peer list.
+// SetPeers atomically replaces the static peer list.
 func (pw *PeerWatcher) SetPeers(peers []string) {
 	pw.mu.Lock()
 	defer pw.mu.Unlock()
-	pw.peers = make([]string, len(peers))
-	copy(pw.peers, peers)
+	pw.static = make([]string, len(peers))
+	copy(pw.static, peers)
+}
+
+// MergeDynamic replaces the dynamic peer list (e.g., from mDNS discovery).
+func (pw *PeerWatcher) MergeDynamic(peers []string) {
+	pw.mu.Lock()
+	defer pw.mu.Unlock()
+	pw.dynamic = make([]string, len(peers))
+	copy(pw.dynamic, peers)
 }
 
 // WatchFile watches the given file for changes and reloads the peer list.
