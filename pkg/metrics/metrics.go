@@ -33,6 +33,10 @@ type Metrics struct {
 
 	// mDNS metrics
 	MDNSPeersDiscoveredTotal prometheus.Counter
+
+	// DNS metrics
+	DNSQueriesTotal  *prometheus.CounterVec
+	DNSHijackedTotal *prometheus.CounterVec
 }
 
 // DefaultMetrics returns the default metrics registry.
@@ -140,6 +144,22 @@ func New() *Metrics {
 				Help: "Total number of peers discovered via mDNS.",
 			},
 		),
+
+		// DNS metrics
+		DNSQueriesTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "outpostimage_dns_queries_total",
+				Help: "Total number of DNS queries received.",
+			},
+			[]string{"type"}, // A, AAAA, etc.
+		),
+		DNSHijackedTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "outpostimage_dns_hijacked_total",
+				Help: "Total number of DNS queries hijacked.",
+			},
+			[]string{"domain"},
+		),
 	}
 
 	// Register all metrics with the default registry.
@@ -157,6 +177,8 @@ func New() *Metrics {
 		m.ProxyInterceptedTotal,
 		m.ProxyUpstreamTotal,
 		m.MDNSPeersDiscoveredTotal,
+		m.DNSQueriesTotal,
+		m.DNSHijackedTotal,
 	)
 
 	return m
