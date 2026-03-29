@@ -13,9 +13,12 @@ import (
 // Proxy is an HTTP/HTTPS proxy server that can intercept OCI registry requests.
 // When a CertManager is provided, HTTPS CONNECT requests are MITM'd to enable
 // interception of OCI registry traffic over TLS.
+// For registries in insecureRegistries, MITM is performed with a self-signed cert
+// and upstream TLS verification is skipped — no CA distribution required.
 type Proxy struct {
-	interceptor func(w http.ResponseWriter, r *http.Request) bool
-	certMgr     *CertManager
+	interceptor        func(w http.ResponseWriter, r *http.Request) bool
+	certMgr            *CertManager
+	insecureRegistries []string
 }
 
 // NewProxy creates a new proxy server.
@@ -27,6 +30,32 @@ func NewProxy(interceptor func(w http.ResponseWriter, r *http.Request) bool, cer
 		p.certMgr = certMgr[0]
 	}
 	return p
+}
+
+// WithInsecureRegistries sets the list of registry hosts that should have TLS
+// verification skipped. Hosts can be specified as "host:port" or "host" (matches
+// any port). For these registries, MITM is performed with a self-signed cert and
+// no CA distribution is needed — clients must already have insecure-registry set.
+func (p *Proxy) WithInsecureRegistries(registries []string) *Proxy {
+	p.insecureRegistries = registries
+	return p
+}
+
+// isInsecureRegistry reports whether host (hostname or host:port) matches any entry
+// in the insecure registries list.
+func (p *Proxy) isInsecureRegistry(host string) bool {
+	for _, reg := range p.insecureRegistries {
+		if reg == host {
+			return true
+		}
+		// List entry without port matches any port on that host
+		if !strings.Contains(reg, ":") {
+			if h, _, err := net.SplitHostPort(host); err == nil && h == reg {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ServeHTTP handles both HTTP proxy requests and HTTPS CONNECT tunneling.
@@ -95,9 +124,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	defer clientConn.Close()
 
-	// If we have a CertManager, do MITM to intercept OCI requests
-	if p.certMgr != nil {
-		p.handleMITM(clientConn, clientBuf, hostname, host)
+	insecure := p.isInsecureRegistry(host) || p.isInsecureRegistry(hostname)
+
+	// MITM if we have a CertManager OR the registry is marked insecure
+	// (insecure registries accept self-signed certs, so no CA distribution needed)
+	if p.certMgr != nil || insecure {
+		p.handleMITM(clientConn, clientBuf, hostname, host, insecure)
 		return
 	}
 
@@ -117,8 +149,15 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 // handleMITM performs TLS man-in-the-middle on the hijacked connection.
 // It presents a dynamically generated certificate to the client, decrypts
 // the traffic, and either intercepts OCI requests or forwards to upstream.
-func (p *Proxy) handleMITM(clientConn net.Conn, _ *bufio.ReadWriter, hostname, hostPort string) {
-	cert, err := p.certMgr.GetCertificate(hostname)
+// When insecure is true, a self-signed cert is used and upstream TLS is not verified.
+func (p *Proxy) handleMITM(clientConn net.Conn, _ *bufio.ReadWriter, hostname, hostPort string, insecure bool) {
+	var cert *tls.Certificate
+	var err error
+	if p.certMgr != nil {
+		cert, err = p.certMgr.GetCertificate(hostname)
+	} else {
+		cert, err = generateSelfSignedCert(hostname)
+	}
 	if err != nil {
 		slog.Error("MITM cert generation failed", "host", hostname, "error", err)
 		return
@@ -159,14 +198,16 @@ func (p *Proxy) handleMITM(clientConn net.Conn, _ *bufio.ReadWriter, hostname, h
 		}
 
 		// Forward to upstream via TLS
-		p.forwardToUpstream(tlsConn, req, hostPort)
+		p.forwardToUpstream(tlsConn, req, hostPort, insecure)
 	}
 }
 
 // forwardToUpstream sends the request to the real server and writes the response back.
-func (p *Proxy) forwardToUpstream(clientTLS net.Conn, req *http.Request, hostPort string) {
+// When insecure is true, TLS verification of the upstream server is skipped.
+func (p *Proxy) forwardToUpstream(clientTLS net.Conn, req *http.Request, hostPort string, insecure bool) {
 	upstreamConn, err := tls.Dial("tcp", hostPort, &tls.Config{
-		ServerName: hostOnly(hostPort),
+		ServerName:         hostOnly(hostPort),
+		InsecureSkipVerify: insecure, //nolint:gosec // intentional for insecure-registry config
 	})
 	if err != nil {
 		slog.Error("upstream TLS dial failed", "host", hostPort, "error", err)

@@ -37,7 +37,8 @@ type RegistryCmd struct {
 	MDNSInterface  string   `arg:"--mdns-interface,env:MDNS_INTERFACE" help:"Network interface for mDNS"`
 	MDNSDomain     string   `arg:"--mdns-domain,env:MDNS_DOMAIN" default:"local" help:"mDNS domain"`
 	LogLevel       string   `arg:"--log-level,env:LOG_LEVEL" default:"INFO" help:"Log level (DEBUG, INFO, WARN, ERROR)"`
-	CADir          string   `arg:"--ca-dir,env:CA_DIR" default:"/etc/outpostimage" help:"Directory for CA certificate and key"`
+	CADir              string   `arg:"--ca-dir,env:CA_DIR" default:"/etc/outpostimage" help:"Directory for CA certificate and key"`
+	InsecureRegistries []string `arg:"--insecure-registry,env:INSECURE_REGISTRIES,separate" help:"Registries to connect without TLS verification (host:port or host)"`
 }
 
 // Args holds the top-level CLI arguments with subcommands.
@@ -166,7 +167,7 @@ func run(cmd *RegistryCmd) error {
 
 	// HTTP Proxy server - intercepts OCI registry traffic (HTTP + HTTPS MITM)
 	interceptor := proxy.RequestRouter(tracker, cmd.RegistryAddr, router)
-	p := proxy.NewProxy(interceptor, certMgr)
+	p := proxy.NewProxy(interceptor, certMgr).WithInsecureRegistries(cmd.InsecureRegistries)
 	proxyHandler := metrics.NewMiddleware("proxy")(p)
 	httpx.Serve(ctx, g, cmd.ProxyAddr, proxyHandler, "proxy")
 
