@@ -42,20 +42,38 @@ func RequestRouter(tracker *state.Tracker, localAddr string, router ...routing.R
 			dgstStr := path[i+len("/blobs/"):]
 			dgst, err := digest.Parse(dgstStr)
 			if err == nil {
-				// Check local first
+				// Check local first via tracker (fast path for config blobs)
 				if tracker.HasDigest(dgst) {
-					slog.Info("routing to local", "source", RouteLocal, "path", path, "digest", dgst)
+					slog.Info("routing blob to local (tracker)", "source", RouteLocal, "path", path)
+					proxyToLocal(w, r, localAddr)
+					return true
+				}
+
+				// Tracker only indexes config digests; layer blobs need a direct check
+				if tryBlobFromLocal(r.Context(), localAddr, path) {
+					slog.Info("routing blob to local (direct)", "source", RouteLocal, "path", path)
 					proxyToLocal(w, r, localAddr)
 					return true
 				}
 
 				// Try P2P peers
+				if p2pRouter != nil {
+					peers := healthyPeersFromRouter(r.Context(), p2pRouter)
+					for _, peer := range peers {
+						if tryBlobFromLocal(r.Context(), peer, path) {
+							slog.Info("routing blob to P2P", "source", RouteP2P, "path", path, "peer", peer)
+							proxyToLocal(w, r, peer)
+							return true
+						}
+					}
+				}
+
+				// Legacy P2P parallel fetcher path
 				if p2pRouter != nil && fetcher != nil {
 					balancer, err := p2pRouter.Lookup(r.Context(), dgst)
 					if err == nil && balancer.Len() > 0 {
-						slog.Info("routing to P2P peers", "source", RouteP2P, "path", path,
+						slog.Info("routing to P2P peers (parallel)", "source", RouteP2P, "path", path,
 							"digest", dgst, "peers", balancer.Len())
-						// Get blob size from first peer via HEAD
 						peer, _ := balancer.Next()
 						size := headBlobSize(r.Context(), peer, path)
 						if size > 0 {
@@ -121,12 +139,13 @@ func headBlobSize(ctx context.Context, peer, path string) int64 {
 	return size
 }
 
-// tryManifestFrom attempts to fetch a manifest from a registry peer (or local).
-// It makes a GET request; if the response is 200, it writes to w and returns true.
-// On any failure or non-200, it returns false without touching w.
-func tryManifestFrom(ctx context.Context, w http.ResponseWriter, addr, path string) bool {
+// tryBlobFromLocal sends a HEAD request to check if a blob exists at the given addr.
+func tryBlobFromLocal(ctx context.Context, addr, path string) bool {
+	if strings.HasPrefix(addr, ":") {
+		addr = "localhost" + addr
+	}
 	url := "http://" + addr + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 	if err != nil {
 		return false
 	}
@@ -134,9 +153,33 @@ func tryManifestFrom(ctx context.Context, w http.ResponseWriter, addr, path stri
 	if err != nil {
 		return false
 	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// tryManifestFrom attempts to fetch a manifest from a registry peer (or local).
+// It makes a GET request; if the response is 200, it writes to w and returns true.
+// On any failure or non-200, it returns false without touching w.
+func tryManifestFrom(ctx context.Context, w http.ResponseWriter, addr, path string) bool {
+	// Normalize addr: ":5000" → "localhost:5000"
+	if strings.HasPrefix(addr, ":") {
+		addr = "localhost" + addr
+	}
+	url := "http://" + addr + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		slog.Debug("tryManifestFrom: request creation failed", "addr", addr, "error", err)
+		return false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		slog.Debug("tryManifestFrom: request failed", "addr", addr, "error", err)
+		return false
+	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		slog.Debug("tryManifestFrom: non-200", "addr", addr, "status", resp.StatusCode)
 		return false
 	}
 
@@ -158,6 +201,10 @@ func healthyPeersFromRouter(ctx context.Context, r routing.Router) []string {
 
 // proxyToLocal redirects the request to the local OCI registry server.
 func proxyToLocal(w http.ResponseWriter, r *http.Request, localAddr string) {
+	// Normalize addr: ":5000" → "localhost:5000"
+	if strings.HasPrefix(localAddr, ":") {
+		localAddr = "localhost" + localAddr
+	}
 	// Create a request to the local registry
 	localURL := "http://" + localAddr + r.URL.Path
 	if r.URL.RawQuery != "" {
