@@ -151,25 +151,24 @@ func run(cmd *RegistryCmd) error {
 	registryHandler := metrics.NewMiddleware("registry")(registryMux)
 	httpx.Serve(ctx, g, cmd.RegistryAddr, registryHandler, "registry")
 
-	// HTTP Proxy server (:3128) - intercepts OCI registry traffic
-	// Pass router for P2P blob fetch from remote peers
-	interceptor := proxy.RequestRouter(tracker, cmd.RegistryAddr, router)
-	p := proxy.NewProxy(interceptor)
-	proxyHandler := metrics.NewMiddleware("proxy")(p)
-	httpx.Serve(ctx, g, cmd.ProxyAddr, proxyHandler, "proxy")
-
-	// Initialize CA for HTTPS MITM (reserved for future use)
+	// Initialize CA for HTTPS MITM
 	caDir := cmd.CADir
 	if err := os.MkdirAll(caDir, 0o755); err != nil {
 		slog.Warn("failed to create CA directory", "dir", caDir, "error", err)
 	}
+	var certMgr *proxy.CertManager
 	certMgr, err := proxy.NewCertManager(caDir)
 	if err != nil {
 		slog.Warn("cert manager init failed (HTTPS interception disabled)", "error", err)
 	} else {
 		slog.Info("CA certificate loaded", "path", filepath.Join(caDir, "ca.crt"))
-		_ = certMgr // Reserved for future HTTPS interception
 	}
+
+	// HTTP Proxy server - intercepts OCI registry traffic (HTTP + HTTPS MITM)
+	interceptor := proxy.RequestRouter(tracker, cmd.RegistryAddr, router)
+	p := proxy.NewProxy(interceptor, certMgr)
+	proxyHandler := metrics.NewMiddleware("proxy")(p)
+	httpx.Serve(ctx, g, cmd.ProxyAddr, proxyHandler, "proxy")
 
 	// Metrics server (:9090) - Prometheus metrics + health check
 	metricsMux := http.NewServeMux()
