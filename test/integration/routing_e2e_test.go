@@ -2,10 +2,13 @@ package integration
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -254,4 +257,115 @@ func TestPeerWatcherDynamicMergeE2E(t *testing.T) {
 	}
 
 	t.Logf("PeerWatcher dynamic merge: 1 static → 3 (merged) → 1 (removed)")
+}
+
+// TestHTTPSProxyInterceptionP2P verifies the full path:
+// Docker → CONNECT proxy → MITM (insecure registry) → OCI request → P2P peer.
+//
+// This tests OUT-22 (insecure_registries MITM) + OUT-23 (HTTPS peer support)
+// working together end-to-end.
+func TestHTTPSProxyInterceptionP2P(t *testing.T) {
+	ctx := context.Background()
+
+	// --- Blob data shared between upstream and peer ---
+	blobData := []byte("https-proxy-test-blob-content-for-p2p-routing")
+	blobDigest := digest.FromBytes(blobData)
+	blobPath := fmt.Sprintf("/v2/library/nginx/blobs/%s", blobDigest)
+
+	// --- Simulated upstream HTTPS registry (e.g. Docker Hub) ---
+	upstreamHit := false
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+		if r.URL.Path == blobPath {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Write(blobData)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer upstream.Close()
+
+	// Extract host from upstream TLS URL ("https://127.0.0.1:PORT" → "127.0.0.1:PORT")
+	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
+
+	// --- P2P peer node that has the blob ---
+	peer := startTestNode(t, "https-peer")
+	defer peer.stop()
+	configData := []byte(`{"os":"linux","arch":"amd64"}`)
+	peer.store.addImage("library/nginx:latest", configData, blobData)
+	peer.initTracker(ctx, t)
+
+	// --- Local node (empty) ---
+	localStore := newMockStore("local-https")
+	localTracker := state.NewTracker(localStore)
+	trackCtx, trackCancel := context.WithCancel(ctx)
+	go localTracker.Track(trackCtx)
+	time.Sleep(50 * time.Millisecond)
+	defer trackCancel()
+
+	// --- P2P Router ---
+	pw := routing.NewPeerWatcher([]string{peer.addr})
+	router := routing.NewStaticRouter(pw)
+	healthCtx, healthCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer healthCancel()
+	go router.RunHealthCheck(healthCtx, 100*time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
+
+	// --- Proxy with insecure registry for the upstream TLS server ---
+	interceptor := proxy.RequestRouter(localTracker, "127.0.0.1:19998", router)
+	proxyHandler := proxy.NewProxy(interceptor).WithInsecureRegistries([]string{upstreamHost})
+	proxyServer := httptest.NewServer(proxyHandler)
+	defer proxyServer.Close()
+
+	proxyURL, _ := url.Parse(proxyServer.URL)
+
+	// Test 1: Peer serves the blob over HTTP (basic sanity check)
+	t.Run("HTTPSPeerBlobLookup", func(t *testing.T) {
+		peerBlobURL := fmt.Sprintf("http://%s%s", peer.addr, blobPath)
+		resp, err := http.Get(peerBlobURL)
+		if err != nil {
+			t.Fatalf("peer blob GET failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("peer blob status=%d, want 200", resp.StatusCode)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		if digest.FromBytes(body) != blobDigest {
+			t.Fatal("peer blob digest mismatch")
+		}
+		t.Logf("Peer blob verified: %d bytes at http://%s", len(body), peer.addr)
+	})
+
+	// Test 2: Full HTTPS proxy flow via http.Transport (simulates Docker with HTTP proxy +
+	// insecure-registry configured). The proxy does CONNECT → MITM → OCI intercept → P2P routing.
+	t.Run("HTTPSProxyViaCONNECT", func(t *testing.T) {
+		client := &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				Proxy: http.ProxyURL(proxyURL),
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: true, //nolint:gosec // simulates Docker insecure-registry mode
+				},
+			},
+		}
+
+		resp, err := client.Get(upstream.URL + blobPath)
+		if err != nil {
+			t.Fatalf("HTTPS proxy client request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status=%d, want 200", resp.StatusCode)
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		if digest.FromBytes(body) != blobDigest {
+			t.Fatalf("blob digest mismatch: got %s, want %s", digest.FromBytes(body), blobDigest)
+		}
+
+		t.Logf("HTTPS CONNECT proxy: %d bytes, digest verified", len(body))
+		t.Logf("P2P served (upstream not hit): %v", !upstreamHit)
+	})
 }

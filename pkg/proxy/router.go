@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,38 @@ import (
 	"github.com/outpostos/outpostimage/pkg/routing"
 	"github.com/outpostos/outpostimage/pkg/state"
 )
+
+// insecurePeerClient is used for HTTPS peer connections on trusted internal networks
+// where peers may use self-signed certificates (common in edge deployments).
+var insecurePeerClient = &http.Client{
+	Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+	},
+}
+
+// peerSchemeAndAddr normalizes a peer address and returns (scheme, host:port).
+// Supports: "host:port", ":port" (→ localhost:port), "http://...", "https://...".
+func peerSchemeAndAddr(addr string) (scheme, hostport string) {
+	switch {
+	case strings.HasPrefix(addr, "https://"):
+		return "https", addr[8:]
+	case strings.HasPrefix(addr, "http://"):
+		return "http", addr[7:]
+	default:
+		if strings.HasPrefix(addr, ":") {
+			return "http", "localhost" + addr
+		}
+		return "http", addr
+	}
+}
+
+// peerClient returns the HTTP client to use for a given scheme.
+func peerClient(scheme string) *http.Client {
+	if scheme == "https" {
+		return insecurePeerClient
+	}
+	return http.DefaultClient
+}
 
 // RouteSource indicates where a request was routed.
 type RouteSource string
@@ -119,12 +152,13 @@ func RequestRouter(tracker *state.Tracker, localAddr string, router ...routing.R
 
 // headBlobSize sends a HEAD request to a peer to get the blob size.
 func headBlobSize(ctx context.Context, peer, path string) int64 {
-	url := fmt.Sprintf("http://%s%s", peer, path)
+	scheme, hostport := peerSchemeAndAddr(peer)
+	url := fmt.Sprintf("%s://%s%s", scheme, hostport, path)
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 	if err != nil {
 		return 0
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := peerClient(scheme).Do(req)
 	if err != nil {
 		return 0
 	}
@@ -140,16 +174,15 @@ func headBlobSize(ctx context.Context, peer, path string) int64 {
 }
 
 // tryBlobFromLocal sends a HEAD request to check if a blob exists at the given addr.
+// addr may include a scheme prefix ("https://host:port") for HTTPS peers; defaults to HTTP.
 func tryBlobFromLocal(ctx context.Context, addr, path string) bool {
-	if strings.HasPrefix(addr, ":") {
-		addr = "localhost" + addr
-	}
-	url := "http://" + addr + path
+	scheme, hostport := peerSchemeAndAddr(addr)
+	url := scheme + "://" + hostport + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 	if err != nil {
 		return false
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := peerClient(scheme).Do(req)
 	if err != nil {
 		return false
 	}
@@ -160,18 +193,16 @@ func tryBlobFromLocal(ctx context.Context, addr, path string) bool {
 // tryManifestFrom attempts to fetch a manifest from a registry peer (or local).
 // It makes a GET request; if the response is 200, it writes to w and returns true.
 // On any failure or non-200, it returns false without touching w.
+// addr may include a scheme prefix ("https://host:port") for HTTPS peers; defaults to HTTP.
 func tryManifestFrom(ctx context.Context, w http.ResponseWriter, addr, path string) bool {
-	// Normalize addr: ":5000" → "localhost:5000"
-	if strings.HasPrefix(addr, ":") {
-		addr = "localhost" + addr
-	}
-	url := "http://" + addr + path
+	scheme, hostport := peerSchemeAndAddr(addr)
+	url := scheme + "://" + hostport + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		slog.Debug("tryManifestFrom: request creation failed", "addr", addr, "error", err)
 		return false
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := peerClient(scheme).Do(req)
 	if err != nil {
 		slog.Debug("tryManifestFrom: request failed", "addr", addr, "error", err)
 		return false
@@ -200,13 +231,10 @@ func healthyPeersFromRouter(ctx context.Context, r routing.Router) []string {
 }
 
 // proxyToLocal redirects the request to the local OCI registry server.
+// localAddr may include a scheme prefix ("https://host:port") for HTTPS; defaults to HTTP.
 func proxyToLocal(w http.ResponseWriter, r *http.Request, localAddr string) {
-	// Normalize addr: ":5000" → "localhost:5000"
-	if strings.HasPrefix(localAddr, ":") {
-		localAddr = "localhost" + localAddr
-	}
-	// Create a request to the local registry
-	localURL := "http://" + localAddr + r.URL.Path
+	scheme, hostport := peerSchemeAndAddr(localAddr)
+	localURL := scheme + "://" + hostport + r.URL.Path
 	if r.URL.RawQuery != "" {
 		localURL += "?" + r.URL.RawQuery
 	}
@@ -218,7 +246,7 @@ func proxyToLocal(w http.ResponseWriter, r *http.Request, localAddr string) {
 	}
 	copyHeaders(req.Header, r.Header)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := peerClient(scheme).Do(req)
 	if err != nil {
 		slog.Error("local proxy failed", "error", err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
