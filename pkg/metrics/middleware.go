@@ -1,7 +1,10 @@
 package metrics
 
 import (
+	"bufio"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"path"
 	"strconv"
@@ -24,6 +27,14 @@ func (r *statusRecorder) Status() int {
 		return http.StatusOK
 	}
 	return r.status
+}
+
+// Hijack implements http.Hijacker, required for CONNECT proxy support.
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hj, ok := r.ResponseWriter.(http.Hijacker); ok {
+		return hj.Hijack()
+	}
+	return nil, nil, fmt.Errorf("underlying ResponseWriter does not support hijacking")
 }
 
 // Middleware returns an HTTP middleware that records metrics and logs.
