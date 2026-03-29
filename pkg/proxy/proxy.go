@@ -122,6 +122,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	// WriteHeader buffers headers in clientBuf; flush so the client receives the
+	// 200 before we attempt any further I/O (TLS handshake or TCP copy).
+	if err := clientBuf.Flush(); err != nil {
+		clientConn.Close()
+		return
+	}
 	defer clientConn.Close()
 
 	insecure := p.isInsecureRegistry(host) || p.isInsecureRegistry(hostname)
@@ -141,7 +147,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	defer destConn.Close()
 
 	done := make(chan struct{}, 2)
-	go func() { io.Copy(destConn, clientConn); done <- struct{}{} }()
+	// Use clientBuf as reader to drain any bytes the HTTP server pre-buffered.
+	go func() { io.Copy(destConn, clientBuf); done <- struct{}{} }()
 	go func() { io.Copy(clientConn, destConn); done <- struct{}{} }()
 	<-done
 }
