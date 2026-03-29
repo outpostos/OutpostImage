@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -69,9 +70,26 @@ func RequestRouter(tracker *state.Tracker, localAddr string, router ...routing.R
 			}
 		}
 
-		// For manifest requests, check if we can resolve the reference
+		// For manifest requests, try local then P2P before falling back to upstream
 		if strings.Contains(path, "/manifests/") {
-			slog.Info("routing to upstream", "source", RouteUpstream, "path", path)
+			// Try local registry first
+			if tryManifestFrom(r.Context(), w, localAddr, path) {
+				slog.Info("manifest served from local", "source", RouteLocal, "path", path)
+				return true
+			}
+
+			// Try P2P peers
+			if p2pRouter != nil {
+				peers := healthyPeersFromRouter(r.Context(), p2pRouter)
+				for _, peer := range peers {
+					if tryManifestFrom(r.Context(), w, peer, path) {
+						slog.Info("manifest served from P2P", "source", RouteP2P, "path", path, "peer", peer)
+						return true
+					}
+				}
+			}
+
+			slog.Info("routing manifest to upstream", "source", RouteUpstream, "path", path)
 			return false
 		}
 
@@ -101,6 +119,41 @@ func headBlobSize(ctx context.Context, peer, path string) int64 {
 		return 0
 	}
 	return size
+}
+
+// tryManifestFrom attempts to fetch a manifest from a registry peer (or local).
+// It makes a GET request; if the response is 200, it writes to w and returns true.
+// On any failure or non-200, it returns false without touching w.
+func tryManifestFrom(ctx context.Context, w http.ResponseWriter, addr, path string) bool {
+	url := "http://" + addr + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	// Success — copy the response to the caller
+	copyHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+	return true
+}
+
+// healthyPeersFromRouter extracts healthy peers from a Router.
+// For StaticRouter, it directly accesses the healthy peer list.
+func healthyPeersFromRouter(ctx context.Context, r routing.Router) []string {
+	if sr, ok := r.(*routing.StaticRouter); ok {
+		return sr.HealthyPeers()
+	}
+	return nil
 }
 
 // proxyToLocal redirects the request to the local OCI registry server.

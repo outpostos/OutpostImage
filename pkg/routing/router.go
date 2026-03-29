@@ -73,7 +73,7 @@ func (r *StaticRouter) Ready(_ context.Context) (bool, error) {
 // Lookup queries all healthy peers for the given digest and returns a Balancer
 // with the peers that have it. The balancer is latency-aware if RTT data is available.
 func (r *StaticRouter) Lookup(ctx context.Context, dgst digest.Digest) (*Balancer, error) {
-	peers := r.healthyPeers()
+	peers := r.HealthyPeers()
 	if len(peers) == 0 {
 		return NewBalancer(nil), nil
 	}
@@ -228,7 +228,8 @@ func (r *StaticRouter) queryPeerDigest(ctx context.Context, peer string, dgst di
 	return body.Exists
 }
 
-func (r *StaticRouter) healthyPeers() []string {
+// HealthyPeers returns all healthy peers, respecting backoff.
+func (r *StaticRouter) HealthyPeers() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
