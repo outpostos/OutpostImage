@@ -57,6 +57,12 @@ func setupDockerFixture(t *testing.T) string {
 	os.WriteFile(filepath.Join(chainDir, "cache-id"), []byte("cache-abc123"), 0644)
 	os.WriteFile(filepath.Join(chainDir, "size"), []byte("1024"), 0644)
 
+	// Create the overlay2 diff directory so layer tar computation works
+	diffDir := filepath.Join(root, "overlay2", "cache-abc123", "diff")
+	os.MkdirAll(diffDir, 0755)
+	// Add a small file so the tar is non-empty
+	os.WriteFile(filepath.Join(diffDir, "hello"), []byte("world"), 0644)
+
 	return root
 }
 
@@ -184,9 +190,31 @@ func TestDockerStore_HasBlob_Layer(t *testing.T) {
 	store := NewDockerStore(root)
 	store.Init(context.Background())
 
-	layerDgst, _ := digest.Parse("sha256:aaaa000000000000000000000000000000000000000000000000000000000000")
-	if !store.HasBlob(context.Background(), layerDgst) {
-		t.Fatal("expected HasBlob to return true for existing layer diffID")
+	// Trigger lazy manifest building which computes layer tar digests
+	configDgst, _ := store.Resolve(context.Background(), "nginx:latest")
+	_, _, err := store.GetManifest(context.Background(), configDgst)
+	if err != nil {
+		t.Fatalf("GetManifest failed: %v", err)
+	}
+
+	// After manifest building, layerBlobs should contain the computed tar digest
+	store.mu.RLock()
+	hasLayers := len(store.layerBlobs) > 0
+	store.mu.RUnlock()
+	if !hasLayers {
+		t.Fatal("expected layerBlobs to be populated after manifest building")
+	}
+
+	// Verify that HasBlob finds the computed tar digest
+	store.mu.RLock()
+	var tarDgst digest.Digest
+	for d := range store.layerBlobs {
+		tarDgst = d
+		break
+	}
+	store.mu.RUnlock()
+	if !store.HasBlob(context.Background(), tarDgst) {
+		t.Fatal("expected HasBlob to return true for computed layer tar digest")
 	}
 }
 

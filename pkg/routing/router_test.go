@@ -195,7 +195,7 @@ func TestStaticRouter_HealthCheck_Backoff(t *testing.T) {
 	}
 
 	// Verify peer is excluded from healthy peers
-	peers := r.healthyPeers()
+	peers := r.HealthyPeers()
 	for _, p := range peers {
 		if p == addr {
 			t.Error("expected unhealthy peer to be excluded from healthy peers")
@@ -236,7 +236,7 @@ func TestStaticRouter_HealthyPeers_Recovery(t *testing.T) {
 	r.backoff["peer:5000"] = time.Now().Add(-1 * time.Minute) // expired
 	r.mu.Unlock()
 
-	peers := r.healthyPeers()
+	peers := r.HealthyPeers()
 	found := false
 	for _, p := range peers {
 		if p == "peer:5000" {
