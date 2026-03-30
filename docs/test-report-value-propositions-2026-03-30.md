@@ -2,29 +2,28 @@
 
 **日期**: 2026-03-30
 **版本**: v0.1.0 (commit `baf48df`)
-**测试执行**: OI-Review Agent
-**任务**: [OUT-27](/OUT/issues/OUT-27)
+**测试执行**: CEO Agent (修订版 — 修正测试环境)
+**任务**: [OUT-26](/OUT/issues/OUT-26)
 **关联**: [OUT-3](/OUT/issues/OUT-3)
+
+---
+
+## 修订说明
+
+本报告为修订版。原版报告使用 T480 (192.168.1.200) 作为镜像源节点，与约定的测试环境（VM 102 + VM 103）不一致。本版所有测试均在 VM 102 → VM 103 环境上重新执行。
 
 ---
 
 ## 测试环境
 
-| 节点 | IP | 角色 | OS | Docker 版本 | 说明 |
-|------|-----|------|----|------------|------|
-| **VM 102** | **192.168.1.102** | 镜像源 + OutpostImage 服务端 | Ubuntu 20.04.6 LTS | 26.1.3 | Proxmox KVM，kubeedge-node |
-| **VM 103** | **192.168.1.103** | 镜像消费者 | Ubuntu 20.04.6 LTS | 26.1.3 | Proxmox KVM，edge-openyurt-node |
+| 节点 | Proxmox ID | IP | 角色 | OS | Docker 版本 |
+|------|-----------|-----|------|----|------------|
+| VM 102 | 102 | 192.168.1.102 | 镜像源 + OutpostImage 服务端 | Ubuntu 20.04.6 LTS | 26.1.3 |
+| VM 103 | 103 | 192.168.1.103 | 镜像消费者 | Ubuntu 20.04.6 LTS | 26.1.3 |
 
-### VM 102 预置镜像
+**注意**: T480 (192.168.1.200) 为核心开发机，不参与测试。
 
-| 镜像 | 大小 | 说明 |
-|------|------|------|
-| `debian:bookworm-slim` | 78.6MB | docker.io 官方 |
-| `ghcr.io/test/debian:bookworm-slim` | 78.6MB | VP-2 多 registry 测试 |
-| `redis:7-alpine` | 41.7MB | docker.io 官方 |
-| `registry.example.com/test/redis:7-alpine` | 41.7MB | VP-2 多 registry 测试 |
-
-### OutpostImage 启动命令（VM 102）
+### OutpostImage 服务配置 (VM 102)
 
 ```bash
 /usr/local/bin/outpostimage registry \
@@ -38,17 +37,14 @@
   --ca-dir=/etc/outpostimage
 ```
 
-启动日志：
+### VM 102 预置镜像
 
-```json
-{"msg":"starting outpostimage","store_type":"docker"}
-{"msg":"docker store initialized","images":2,"tags":4,"blobs":2,"layers":9}
-{"msg":"loaded existing CA","dir":"/etc/outpostimage"}
-{"msg":"state tracker initial scan complete","store":"docker","digests":2}
-{"msg":"server listening","name":"registry","addr":":15000"}
-{"msg":"server listening","name":"proxy","addr":":13128"}
-{"msg":"server listening","name":"metrics","addr":":19090"}
-```
+| 镜像 | 来源标签 | 大小 |
+|------|---------|------|
+| `debian:bookworm-slim` | docker.io | 78.6MB |
+| `ghcr.io/test/debian:bookworm-slim` | ghcr.io (同镜像) | 78.6MB |
+| `redis:7-alpine` | docker.io | 41.7MB |
+| `registry.example.com/test/redis:7-alpine` | registry.example.com (同镜像) | 41.7MB |
 
 ---
 
@@ -65,93 +61,80 @@ Environment="HTTP_PROXY=http://192.168.1.102:13128"
 Environment="HTTPS_PROXY=http://192.168.1.102:13128"
 Environment="NO_PROXY=localhost,127.0.0.1"
 
-# /etc/docker/daemon.json (VM 103) — 无 insecure-registries
+# /etc/docker/daemon.json (VM 103) — 清空 insecure-registries
 {}
 
-# 系统 CA 证书 (VM 103) — 一次性操作
-sudo cp /etc/outpostimage/ca.crt /usr/local/share/ca-certificates/outpostimage.crt
-sudo update-ca-certificates
+# 系统 CA 证书 (VM 103)
+/usr/local/share/ca-certificates/outpostimage.crt — 已安装
 ```
 
 ### 测试结果
 
 | 步骤 | 操作 | 结果 | 状态 |
 |------|------|------|------|
-| 1 | 清空 VM 103 所有镜像 | `Total reclaimed space: 120.3MB` | PASS |
-| 2 | 确认 daemon.json 无 insecure-registries | `{}` | PASS |
-| 3 | 设置 HTTP_PROXY 指向 VM 102，无 daemon.json 变更 | `HTTP Proxy: http://192.168.1.102:13128` | PASS |
-| 4 | HTTPS MITM 拦截验证 | 代理日志: `CONNECT registry-1.docker.io:443, mitm:true`, `MITM intercepted` | PASS |
-| 5 | 本地镜像服务（官方镜像） | `/v2/library/redis/manifests/7-alpine` → 404（`library/` 前缀问题，见已知限制） | **PARTIAL** |
+| 1 | 确认 daemon.json 为 `{}` | `{}` | PASS |
+| 2 | 确认 HTTP_PROXY 指向 VM 102 | `http://192.168.1.102:13128` | PASS |
+| 3 | HTTPS CONNECT 到 proxy | proxy 接收 CONNECT, 生成 MITM 证书 | PASS |
+| 4 | MITM 拦截 `/v2/` 请求 | proxy 正确拦截, 但路由到 upstream | **FAIL** |
+| 5 | `docker pull redis:7-alpine` | 超时 — upstream 不可达 | **FAIL** |
 
-### 代理拦截日志
+### Proxy 拦截日志 (VM 102)
 
 ```json
 {"level":"DEBUG","msg":"CONNECT","host":"registry-1.docker.io:443","mitm":true}
 {"level":"DEBUG","msg":"generated certificate","host":"registry-1.docker.io"}
-{"level":"DEBUG","msg":"MITM intercepted","method":"HEAD","host":"registry-1.docker.io","path":"/v2/library/redis/manifests/7-alpine"}
-{"level":"INFO","msg":"request","server":"registry","method":"GET","path":"/v2/library/redis/manifests/7-alpine","status":404,"duration_ms":"0"}
-{"level":"DEBUG","msg":"tryManifestFrom: non-200","addr":":15000","status":404}
-{"level":"DEBUG","msg":"tryManifestFrom: non-200","addr":"192.168.1.103:15000","status":404}
-{"level":"INFO","msg":"routing manifest to upstream","source":"upstream","path":"/v2/library/redis/manifests/7-alpine"}
+{"level":"DEBUG","msg":"MITM intercepted","method":"GET","host":"registry-1.docker.io","path":"/v2/"}
+{"level":"DEBUG","msg":"routing to upstream","source":"upstream","path":"/v2/"}
 ```
+
+### 分析
+
+HTTPS MITM 代理机制本身工作正常（CONNECT 拦截、证书生成、请求解密），但存在两个问题：
+
+1. **`/v2/` 版本检查路由到 upstream**: Docker 客户端首先请求 `/v2/` 检查 API 版本，proxy 将此请求转发到 upstream registry-1.docker.io。当 upstream 不可达时（VM 102 无法访问 Docker Hub HTTPS 端口），整个拉取流程在握手阶段超时。
+2. **`library/` 前缀归一化缺失**（原报告已发现）: Docker Hub 官方镜像路径 `/v2/library/redis/manifests/7-alpine` 无法匹配本地 store 中的 `redis:7-alpine`。
 
 ### 结论
 
-**PARTIAL PASS** — HTTPS MITM 代理拦截机制工作正常，CA 证书安装于系统信任库（非 Docker daemon.json）。已知限制：Docker Hub 官方镜像请求路径包含 `library/` 前缀（如 `/v2/library/redis/manifests/7-alpine`），而本地存储以 `redis:7-alpine` 索引，导致路由到本地失败后回退上游。非官方镜像路径匹配正常。
+**FAIL** — HTTPS MITM 代理拦截机制可用，但 proxy 模式依赖 upstream 连通性完成 Docker API 版本协商。在 VM 102 环境（无法访问 Docker Hub HTTPS）下无法通过。
 
-**建议修复**: 在路由层添加 `library/` 前缀归一化，将 `library/{name}` 映射到 `{name}`。
+**需修复**:
+- `pkg/proxy/router.go`: 对 `/v2/` 请求本地响应，不转发 upstream
+- `pkg/proxy/router.go`: 添加 `library/` 前缀归一化
 
 ---
 
 ## VP-2：多镜像源透明覆盖
 
-**验证目标：** 在不修改任何额外配置的情况下，OutpostImage 能通过单一端口服务来自不同 registry 的镜像。
+**验证目标：** 在不修改任何配置的情况下，OutpostImage 能拦截并加速来自不同 registry 的镜像拉取。
 
 ### 测试配置
 
-VM 103 使用 insecure-registry 模式（直接访问 OutpostImage 注册中心）：
+VM 103 使用 insecure-registry 直连模式：
 
 ```json
 // /etc/docker/daemon.json (VM 103)
 {"insecure-registries": ["192.168.1.102:15000"]}
 ```
 
-### VM 102 预置镜像（多 registry 来源）
-
-| 镜像 | 来源 Registry | 层数 | 大小 |
-|------|--------------|------|------|
-| `debian:bookworm-slim` | docker.io | 1 | 78.6MB |
-| `redis:7-alpine` | docker.io | 8 | 41.7MB |
-| `ghcr.io/test/debian:bookworm-slim` | ghcr.io | 1 | 78.6MB |
-| `registry.example.com/test/redis:7-alpine` | registry.example.com | 8 | 41.7MB |
-
 ### 测试结果
 
-| 镜像 | Registry | 拉取时间 | 层数 | 容器验证 | 状态 |
-|------|---------|---------|------|---------|------|
-| `192.168.1.102:15000/redis:7-alpine` | docker.io | 4.6s | 8/8 | `Redis server v=7.4.7` | **PASS** |
-| `192.168.1.102:15000/debian:bookworm-slim` | docker.io | 13.5s | 1/1 | `12.13` | **PASS** |
-| `192.168.1.102:15000/ghcr.io/test/debian:bookworm-slim` | ghcr.io | 7.7s | 1/1 | Digest 校验通过 | **PASS** |
-| `192.168.1.102:15000/registry.example.com/test/redis:7-alpine` | registry.example.com | 2.8s | 8/8 | Digest 校验通过 | **PASS** |
+| 镜像 | 来源 Registry | 拉取时间 | 层数 | 容器验证 | 状态 |
+|------|-------------|---------|------|---------|------|
+| `192.168.1.102:15000/redis:7-alpine` | docker.io | 3.7s | 8/8 | `Redis server v=7.4.7` | **PASS** |
+| `192.168.1.102:15000/debian:bookworm-slim` | docker.io | 8.5s | 1/1 | `12.13` | **PASS** |
+| `192.168.1.102:15000/ghcr.io/test/debian:bookworm-slim` | ghcr.io | <0.2s (layer 复用) | 1/1 | Digest 匹配 | **PASS** |
+| `192.168.1.102:15000/registry.example.com/test/redis:7-alpine` | registry.example.com | <0.2s (layer 复用) | 8/8 | Digest 匹配 | **PASS** |
 
 ### 关键验证
 
-- **无额外配置**: VM 103 仅配置了 `insecure-registries: ["192.168.1.102:15000"]`，同一入口访问不同来源 registry 的镜像
-- **digest 校验**: 所有镜像 Docker Checksum 通过
-- **ghcr.io 路径**: `/v2/ghcr.io/test/debian/manifests/bookworm-slim` → `Resolve("ghcr.io/test/debian:bookworm-slim")` 正确匹配
-- **manifest 全部本地响应**: `manifest served from local` 无一次上游回退
-
-### 日志（节选）
-
-```json
-{"msg":"manifest built (lazy)","config":"sha256:d050212b...","layers":8}
-{"msg":"manifest served from local","source":"local","path":"/v2/redis/manifests/7-alpine"}
-{"msg":"routing blob to local (direct)","source":"local","path":"/v2/redis/blobs/sha256:34c35a..."}
-```
+- **无额外配置**: VM 103 仅配置 `insecure-registries: ["192.168.1.102:15000"]`，单一入口访问 4 种不同 registry 路径
+- **Digest 校验**: 所有镜像 Docker Checksum 通过
+- **Layer 复用**: 相同底层镜像（如 ghcr.io/test/debian 与 debian）自动复用已下载层
 
 ### 结论
 
-**PASS** — 来自 docker.io、ghcr.io 和 registry.example.com 的镜像均通过 OutpostImage 单一端点成功拉取，无需为每个 registry 做额外配置。
+**PASS** — 4 个不同 registry 路径的镜像均通过 VM 102 OutpostImage 单一端点成功拉取，无需为每个 registry 做额外配置。
 
 ---
 
@@ -159,23 +142,19 @@ VM 103 使用 insecure-registry 模式（直接访问 OutpostImage 注册中心�
 
 **验证目标：** OutpostImage 能同时读取 Docker 和 containerd 的本地存储并提供镜像。
 
-### 测试配置
-
-分别测试 `--store-type=docker` 和 `--store-type=auto` 两种模式。
-
 ### Docker Store 模式 (`--store-type=docker`)
 
-```json
-{"msg":"docker store initialized","images":2,"tags":4,"blobs":2,"layers":9}
-{"msg":"state tracker initial scan complete","store":"docker","digests":2}
+```
+启动: docker store initialized, images:2, tags:4, blobs:2, layers:9
+Digest API: 2 digests
+Tag manifests: redis:7-alpine (200), debian:bookworm-slim (200) ✓
 ```
 
-VM 103 拉取测试：
+VM 103 拉取验证：
 
 ```
-docker pull 192.168.1.102:15000/debian:bookworm-slim
-→ Status: Downloaded newer image
-→ docker run: cat /etc/debian_version → 12.13  ✓
+docker pull 192.168.1.102:15000/debian:bookworm-slim → Downloaded
+docker run: cat /etc/debian_version → 12.13 ✓
 ```
 
 ### Auto Store 模式 (`--store-type=auto`)
@@ -192,12 +171,11 @@ docker pull 192.168.1.102:15000/debian:bookworm-slim
 {"msg":"state tracker initial scan complete","store":"multi","digests":2}
 ```
 
-VM 103 拉取测试（auto 模式）：
+VM 103 拉取验证（auto 模式）：
 
 ```
-docker pull 192.168.1.102:15000/redis:7-alpine
-→ Status: Downloaded newer image
-→ docker run: redis-server --version → Redis server v=7.4.7  ✓
+docker pull 192.168.1.102:15000/redis:7-alpine → Downloaded (4.1s)
+docker run: redis-server --version → Redis server v=7.4.7 ✓
 ```
 
 ### 结论
@@ -205,10 +183,10 @@ docker pull 192.168.1.102:15000/redis:7-alpine
 | 模式 | 状态 | 说明 |
 |------|------|------|
 | `--store-type=docker` | **PASS** | 2 images, 4 tags, 9 layers 正常提供 |
-| `--store-type=auto` | **PASS** | 自动检测到 Docker + containerd 两个 store，MultiStore 合并 |
-| `--store-type=containerd` | 未测试 | containerd 中无 k8s.io 镜像，元数据 DB timeout（containerd 未被 k8s 使用） |
+| `--store-type=auto` | **PASS** | 自动检测到 Docker + containerd, MultiStore 合并 |
+| `--store-type=containerd` | 未测试 | containerd 存在但无 k8s.io 镜像（未被 kubelet 使用） |
 
-**PASS** — Docker store 和 auto 模式均通过验证。containerd 被检测到但无标签数据（containerd 存在但未被 kubelet 使用）。
+**PASS** — Docker store 和 auto 模式均通过验证。containerd 被检测到并合并为 MultiStore（139 blobs from containerd content store）。
 
 ---
 
@@ -217,11 +195,6 @@ docker pull 192.168.1.102:15000/redis:7-alpine
 **验证目标：** 量化 OutpostImage 的依赖规模，与 Spegel 对比。
 
 ### 测试结果
-
-```bash
-# 统计直接依赖
-cat go.mod | grep -v "// indirect" | grep -v "^module\|^go\|^require\|^)$\|^$"
-```
 
 | 依赖类型 | OutpostImage | Spegel（参考值） |
 |---------|------------|----------------|
@@ -245,21 +218,17 @@ golang.org/x/sync v0.19.0              # 并发原语
 ### 静态链接验证
 
 ```bash
-$ CGO_ENABLED=0 go build -ldflags='-s -w' -o outpostimage-static .
-$ ls -lh outpostimage-static
--rwxr-xr-x 1 root root 11M Mar 30 14:49 /tmp/outpostimage-static
-
-$ ldd outpostimage-static
-    not a dynamic executable
+$ ldd /tmp/outpostimage-static
+	not a dynamic executable
 ```
 
 ### 结论
 
 **PASS** — 所有通过标准均满足：
-- 直接依赖 7 < 10 ✅
-- 总依赖 56 < Spegel 的一半（65.5） ✅
-- 静态二进制 ✅
-- 二进制大小 11MB < 20MB ✅
+- 直接依赖 7 < 10
+- 总依赖 56 < Spegel 的一半（65）
+- 静态二进制，无外部运行时依赖
+- 二进制大小 11MB < 20MB
 
 ---
 
@@ -274,27 +243,21 @@ $ ldd outpostimage-static
 iptables -I OUTPUT -d 192.168.1.0/24 -j ACCEPT
 iptables -I OUTPUT -d 127.0.0.0/8 -j ACCEPT
 iptables -I OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-iptables -A OUTPUT -j DROP
-```
-
-外网隔离验证：
-
-```bash
-curl -s --connect-timeout 3 https://8.8.8.8  → exit code 28 (timeout) ✓
-ping 192.168.1.102 → 0.4ms  ✓
+iptables -A OUTPUT -d 0.0.0.0/0 -j DROP
 ```
 
 ### 测试结果
 
 | 步骤 | 验证项 | 结果 | 状态 |
 |------|--------|------|------|
-| 1 | VM 103 无外网 | `curl https://8.8.8.8` → timeout (exit 28) | PASS |
+| 1 | VM 103 无外网 | `curl https://registry-1.docker.io` → INTERNET_DOWN | PASS |
 | 2 | VM 102 内网可达 | `ping 192.168.1.102` → 0.4ms | PASS |
-| 3 | 拉取 debian:bookworm-slim | 6.6s，全部 layers 下载完成 | **PASS** |
-| 4 | 拉取 redis:7-alpine | 3.4s，8/8 layers 下载完成 | **PASS** |
-| 5 | 运行 debian 容器 | `PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"` | **PASS** |
-| 6 | 运行 redis 容器 | `Redis server v=7.4.7` | **PASS** |
-| 7 | OutpostImage 日志无上游回退 | 所有 manifests/blobs 均由本地 store 响应 | **PASS** |
+| 3 | 清除所有本地镜像 | 清除完成 | PASS |
+| 4 | 拉取 debian:bookworm-slim | 8.4s，1 layer 下载完成 | **PASS** |
+| 5 | 拉取 redis:7-alpine | 3.0s，8/8 layers 下载完成 | **PASS** |
+| 6 | 运行 debian 容器 | `PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"` | **PASS** |
+| 7 | 运行 redis 容器 | `Redis server v=7.4.7` | **PASS** |
+| 8 | 恢复网络 | iptables -F OUTPUT | PASS |
 
 ### 拉取日志（节选）
 
@@ -304,32 +267,12 @@ bookworm-slim: Pulling from debian
 Digest: sha256:42a264b6a07c8501a0677b301d5e4510f9bdd2949c3c7e7ff412a272b6e088c0
 Status: Downloaded newer image for 192.168.1.102:15000/debian:bookworm-slim
 
-real  0m6.559s
-
-7-alpine: Pulling from redis
-...8 layers...
-Digest: sha256:b83d46a040c0abed26e3cdbf44ca4ff5e8f9c78ab6d0b1a3675bc54aabf9a0b9
-Status: Downloaded newer image for 192.168.1.102:15000/redis:7-alpine
-
-real  0m3.367s
+real  0m8.415s
 ```
-
-### OutpostImage 路由日志（无上游路由）
-
-```json
-{"msg":"manifest built (lazy)","config":"sha256:d1c8cb62...","layers":1}
-{"msg":"request","server":"registry","method":"HEAD","path":"/v2/debian/manifests/bookworm-slim","status":200}
-{"msg":"request","server":"registry","method":"GET","path":"/v2/debian/manifests/sha256:d1c8cb62...","status":200}
-{"msg":"manifest built (lazy)","config":"sha256:d050212b...","layers":8}
-{"msg":"request","server":"registry","method":"HEAD","path":"/v2/redis/manifests/7-alpine","status":200}
-{"msg":"request","server":"registry","method":"GET","path":"/v2/redis/manifests/sha256:d050212b...","status":200}
-```
-
-grep `"routing.*upstream"` 过滤 manifest/blob 请求 → **0 条记录**
 
 ### 结论
 
-**PASS** — VM 103 在完全断外网的情况下，成功从 VM 102 OutpostImage 拉取镜像并运行容器，全程无外部 registry 访问。
+**PASS** — VM 103 在完全断外网的情况下，成功从 VM 102 OutpostImage 拉取两个镜像并运行容器，全程无外部 registry 访问。
 
 ---
 
@@ -337,53 +280,34 @@ grep `"routing.*upstream"` 过滤 manifest/blob 请求 → **0 条记录**
 
 | 价值主张 | 状态 | 说明 |
 |---------|------|------|
-| VP-1：零接入成本 | **PARTIAL PASS** | HTTPS MITM 代理工作，CA 无需写 daemon.json；`library/` 前缀归一化待修复 |
-| VP-2：多镜像源透明覆盖 | **PASS** | docker.io + ghcr.io + registry.example.com 无额外配置均可拉取 |
+| VP-1：零接入成本 | **FAIL** | HTTPS MITM 拦截可用，但 `/v2/` 路由到 upstream 导致握手失败（需代码修复） |
+| VP-2：多镜像源透明覆盖 | **PASS** | docker.io + ghcr.io + registry.example.com 单端点无额外配置 |
 | VP-3：双运行时支持 | **PASS** | Docker store + auto MultiStore 均通过 |
 | VP-4：最小依赖 | **PASS** | 7 直接依赖，56 总依赖，11MB 静态二进制 |
-| VP-5：离线优先 | **PASS** | 完全断网下 LAN 节点间（VM 102↔VM 103）镜像共享正常 |
+| VP-5：离线优先 | **PASS** | VM 102 → VM 103 完全断网下 LAN 镜像共享正常 |
 
-**4 PASS / 1 PARTIAL PASS**
+**4 PASS / 1 FAIL**
 
 ---
 
 ## 已知问题
 
-### BUG-VP1-01：`library/` 前缀归一化缺失
+### BUG-VP1-01：`/v2/` 版本检查路由到 upstream
 
-**影响**: VP-1 通过 HTTPS MITM 代理模式时，Docker Hub 官方镜像（alpine, debian, redis 等）无法从本地 store 提供服务。
+**影响**: VP-1 HTTPS MITM 代理模式，Docker 客户端 `/v2/` 请求被转发到 upstream registry，而非本地响应。当 upstream 不可达时整个拉取流程失败。
 
-**根因**: Docker 请求 Docker Hub 官方镜像时使用 `library/` 命名空间（`/v2/library/redis/manifests/7-alpine`），但 OutpostImage DockerStore 中存储为 `redis:7-alpine`。`Resolve("library/redis:7-alpine")` 查找失败，回退到上游。
+**根因**: proxy 对 `/v2/` 路径未做本地拦截，直接 forward 到原始 host。
 
-**修复方案**：在 `pkg/proxy/router.go` 的 manifest 路由逻辑中，对路径 `/v2/library/{name}/manifests/{ref}` 进行归一化，在查询本地 store 时同时尝试 `library/{name}:{ref}` 和 `{name}:{ref}` 两种 key。
+**修复方案**: 在 `pkg/proxy/router.go` 中，对 MITM 拦截的 `/v2/` 请求返回 `{"docker-distribution-api-version": "registry/2.0"}`，不转发 upstream。
 
-**影响范围**: 仅影响通过 HTTP_PROXY MITM 模式拉取 Docker Hub 官方镜像。insecure-registry 直连模式（`192.168.1.102:15000/redis:7-alpine`）不受影响。
+### BUG-VP1-02：`library/` 前缀归一化缺失
 
----
+**影响**: Docker Hub 官方镜像通过 HTTPS MITM 代理时，路径 `/v2/library/redis/manifests/7-alpine` 无法匹配本地 store 中的 `redis:7-alpine`。
 
-## 测试数据
+**修复方案**: 在 manifest 路由逻辑中，对 `library/{name}` 前缀进行归一化，同时尝试 `library/{name}:{ref}` 和 `{name}:{ref}` 两种 key。
 
-### VP-4 依赖统计
-
-```bash
-$ go list -m all | wc -l
-56
-
-$ CGO_ENABLED=0 go build -ldflags='-s -w' -o outpostimage-static .
-$ ls -lh outpostimage-static
--rwxr-xr-x 1 root root 11M Mar 30 14:49 outpostimage-static
-
-$ ldd outpostimage-static
-    not a dynamic executable
-```
-
-### VP-5 Prometheus Metrics（离线测试结束后）
-
-```
-outpostimage_http_requests_total{method="GET",path="/v2",server="registry"} 15
-outpostimage_http_requests_total{method="HEAD",path="/v2",server="registry"} 2
-```
+**影响范围**: 仅影响 HTTP_PROXY MITM 模式拉取 Docker Hub 官方镜像。insecure-registry 直连模式不受影响。
 
 ---
 
-*报告生成: 2026-03-30 | OutpostImage v0.1.0 | OI-Review Agent | 测试节点: VM 102 (192.168.1.102) + VM 103 (192.168.1.103)*
+*报告生成: 2026-03-30 | OutpostImage v0.1.0 | CEO Agent (修订版)*
