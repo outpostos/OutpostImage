@@ -432,6 +432,17 @@ tr:hover td { background: var(--bg-surface); }
   margin-bottom: 12px;
 }
 
+pre.test-log {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 12px 0;
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
 @media (max-width: 600px) {
   .test-stats { grid-template-columns: repeat(2, 1fr); }
 }
