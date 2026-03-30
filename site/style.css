@@ -281,39 +281,44 @@ section h2 {
 }
 
 /* ── How It Works ── */
-.steps {
+.hiw-phases {
   display: grid;
   gap: 12px;
+  margin-bottom: 24px;
 }
 
-.step {
-  display: flex;
-  gap: 16px;
-  align-items: flex-start;
+.hiw-phases p {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  line-height: 1.7;
+}
+
+.hiw-phases p strong { color: var(--text); }
+
+.hiw-phases code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--bg-elevated);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.diagram {
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 16px 20px;
-}
-
-.step-num {
-  background: var(--accent);
-  color: #fff;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
+  padding: 24px;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
-  flex-shrink: 0;
-  margin-top: 1px;
+  color: var(--text-muted);
+  white-space: pre;
+  overflow-x: auto;
+  line-height: 1.5;
 }
 
-.step-text { font-size: 0.95rem; color: var(--text-muted); }
-.step-text strong { color: var(--text); }
-.step-text code { font-family: var(--font-mono); font-size: 0.85em; background: var(--bg-elevated); padding: 1px 5px; border-radius: 4px; }
+@media (max-width: 600px) {
+  .diagram { font-size: 0.65rem; padding: 16px; }
+}
 
 /* ── Features ── */
 .features-grid {
@@ -376,6 +381,60 @@ td code { font-family: var(--font-mono); font-size: 0.85em; background: var(--bg
 
 tr:last-child td { border-bottom: none; }
 tr:hover td { background: var(--bg-surface); }
+
+/* ── Test Results ── */
+.test-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 32px;
+}
+
+.test-stats.compact {
+  margin-bottom: 0;
+}
+
+.test-stat {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 16px;
+  text-align: center;
+}
+
+.test-stat-value {
+  font-size: 1.8rem;
+  font-weight: 800;
+  color: var(--green);
+  font-family: var(--font-mono);
+  line-height: 1.2;
+  margin-bottom: 6px;
+}
+
+.test-stat-label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.test-section {
+  margin-bottom: 28px;
+}
+
+.test-section h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.test-section-sub {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+@media (max-width: 600px) {
+  .test-stats { grid-template-columns: repeat(2, 1fr); }
+}
 
 /* ── Quick Start ── */
 .quickstart-tabs {

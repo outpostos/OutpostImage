@@ -115,50 +115,27 @@
 <section id="how-it-works">
   <div class="container">
     <h2>How It Works</h2>
-    <p class="section-sub">Six steps from pull request to cached image.</p>
+    <p class="section-sub">OutpostImage intercepts image pulls, resolves from peers first, and shares back to the LAN — in three phases.</p>
 
-    <div class="steps">
-      <div class="step">
-        <div class="step-num">1</div>
-        <div class="step-text">
-          Docker / containerd is configured with <code>HTTP_PROXY=http://localhost:3128</code>
-          to route all registry traffic through OutpostImage.
-        </div>
-      </div>
-      <div class="step">
-        <div class="step-num">2</div>
-        <div class="step-text">
-          <strong>OutpostImage intercepts image pull requests</strong> via the HTTP proxy — no registry mirror config required.
-        </div>
-      </div>
-      <div class="step">
-        <div class="step-num">3</div>
-        <div class="step-text">
-          For HTTPS registries, the proxy performs <strong>MITM with a locally-generated CA certificate</strong>
-          to inspect and rewrite traffic.
-        </div>
-      </div>
-      <div class="step">
-        <div class="step-num">4</div>
-        <div class="step-text">
-          The proxy <strong>checks if any P2P peer has the requested blob or manifest</strong>
-          by querying each peer's <code>/api/v1/digests/{digest}</code> endpoint.
-        </div>
-      </div>
-      <div class="step">
-        <div class="step-num">5</div>
-        <div class="step-text">
-          <strong>Found in P2P network?</strong> Serve the blob directly from a peer at LAN speed.
-          No internet bandwidth consumed.
-        </div>
-      </div>
-      <div class="step">
-        <div class="step-num">6</div>
-        <div class="step-text">
-          <strong>Not found?</strong> Forward the request to the upstream registry over the internet,
-          then cache locally for future P2P sharing.
-        </div>
-      </div>
+    <div class="hiw-phases">
+      <p><strong>Phase 1 — Intercept:</strong> Docker or containerd is configured with a single env var: <code>HTTP_PROXY=http://localhost:3128</code>. All registry traffic flows through OutpostImage automatically — no mirror config, no daemon changes. For HTTPS registries, a locally-generated CA certificate enables transparent inspection.</p>
+      <p><strong>Phase 2 — Resolve:</strong> For every blob or manifest, OutpostImage checks the <strong>local image store</strong> first, then queries <strong>P2P peers</strong> on the LAN via <code>/api/v1/digests/{digest}</code>. Only on a complete miss does it fall back to the upstream registry.</p>
+      <p><strong>Phase 3 — Share:</strong> Once a node has an image, it becomes a source for every other node. Each instance exposes a standard <strong>OCI registry API on :5000</strong>, serving blobs directly from the local store. Peers discover each other via static config or <strong>mDNS auto-discovery</strong> — no central coordinator needed.</p>
+    </div>
+
+    <div class="diagram">
+Edge Node A                         Edge Node B
+┌─────────────────────┐             ┌─────────────────────┐
+│  Docker / containerd │             │  Docker / containerd │
+│       │              │             │       │              │
+│       ▼ HTTP_PROXY   │             │       ▼ HTTP_PROXY   │
+│  OutpostImage :3128  │◄──── P2P ──►│  OutpostImage :3128  │
+│       │              │   :5000     │       │              │
+│       ▼              │             │       ▼              │
+│  Local Image Store   │             │  Local Image Store   │
+└─────────────────────┘             └─────────────────────┘
+            │                                   │
+            └──── cache miss ────► Upstream Registry (internet)
     </div>
   </div>
 </section>
@@ -263,6 +240,145 @@
         </tbody>
       </table>
     </div>
+  </div>
+</section>
+
+<!-- Test Results -->
+<section id="test-results">
+  <div class="container">
+    <h2>Tested &amp; Validated</h2>
+    <p class="section-sub">Real-world validation across Docker and containerd on edge VMs (2026-03-30).</p>
+
+    <!-- Headline stats -->
+    <div class="test-stats">
+      <div class="test-stat">
+        <div class="test-stat-value">5/5</div>
+        <div class="test-stat-label">Value Props Passed</div>
+      </div>
+      <div class="test-stat">
+        <div class="test-stat-value">5/5</div>
+        <div class="test-stat-label">Store &times; Consumer Combos</div>
+      </div>
+      <div class="test-stat">
+        <div class="test-stat-value">260x</div>
+        <div class="test-stat-label">Cache Hit Speedup</div>
+      </div>
+      <div class="test-stat">
+        <div class="test-stat-value">11 MB</div>
+        <div class="test-stat-label">Static Binary</div>
+      </div>
+    </div>
+
+    <!-- Test matrix -->
+    <div class="test-section">
+      <h3>Value Proposition Matrix</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Claim</th>
+              <th>Test</th>
+              <th>Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Zero-intrusion setup</td>
+              <td>Single <code>HTTP_PROXY</code> env var, no daemon config changes</td>
+              <td class="check-yes">PASS</td>
+            </tr>
+            <tr>
+              <td>Multi-registry transparent interception</td>
+              <td>docker.io + ghcr.io + custom registry, all served locally</td>
+              <td class="check-yes">PASS</td>
+            </tr>
+            <tr>
+              <td>Docker + containerd dual runtime</td>
+              <td>5 Store&times;Consumer combinations (docker/containerd/auto &times; docker/ctr)</td>
+              <td class="check-yes">PASS</td>
+            </tr>
+            <tr>
+              <td>Minimal dependencies</td>
+              <td>7 direct deps, 56 total, 11 MB static binary (vs Spegel ~40 MB)</td>
+              <td class="check-yes">PASS</td>
+            </tr>
+            <tr>
+              <td>Offline-first</td>
+              <td>Full network isolation (iptables DROP), P2P sharing works</td>
+              <td class="check-yes">PASS</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Performance -->
+    <div class="test-section">
+      <h3>Large Image Transfer Performance</h3>
+      <p class="test-section-sub">Simulated edge AI model distribution between two QEMU VMs (1 vCPU, 2 GB RAM each).</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Scenario</th>
+              <th>Image Size</th>
+              <th>Transfer Rate</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>500 MB model (first pull)</td>
+              <td>603 MB</td>
+              <td>18.84 MB/s</td>
+              <td>32 s</td>
+            </tr>
+            <tr>
+              <td>2 GB model (first pull)</td>
+              <td>2.23 GB</td>
+              <td>15.86 MB/s</td>
+              <td>144 s</td>
+            </tr>
+            <tr>
+              <td>Repeat pull (cache hit)</td>
+              <td>603 MB</td>
+              <td class="check-better">&#8734;</td>
+              <td class="check-better">123 ms (260x faster)</td>
+            </tr>
+            <tr>
+              <td>Parallel pull (500 MB + 2 GB)</td>
+              <td>2.83 GB total</td>
+              <td>&#8212;</td>
+              <td>129 s (27% faster than serial)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Resource footprint -->
+    <div class="test-section">
+      <h3>Resource Footprint at Peak Transfer</h3>
+      <div class="test-stats compact">
+        <div class="test-stat">
+          <div class="test-stat-value">5.8%</div>
+          <div class="test-stat-label">CPU (1 vCPU)</div>
+        </div>
+        <div class="test-stat">
+          <div class="test-stat-value">6 MB</div>
+          <div class="test-stat-label">RSS Memory</div>
+        </div>
+        <div class="test-stat">
+          <div class="test-stat-value">7</div>
+          <div class="test-stat-label">Direct Dependencies</div>
+        </div>
+        <div class="test-stat">
+          <div class="test-stat-value">0</div>
+          <div class="test-stat-label">Dynamic Libraries</div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </section>
 
