@@ -290,8 +290,8 @@ ping 192.168.1.102 → 0.4ms  ✓
 |------|--------|------|------|
 | 1 | VM 103 无外网 | `curl https://8.8.8.8` → timeout (exit 28) | PASS |
 | 2 | VM 102 内网可达 | `ping 192.168.1.102` → 0.4ms | PASS |
-| 3 | 拉取 debian:bookworm-slim | 9.6s，全部 layers 下载完成 | **PASS** |
-| 4 | 拉取 redis:7-alpine | 6.8s，8/8 layers 下载完成 | **PASS** |
+| 3 | 拉取 debian:bookworm-slim | 6.6s，全部 layers 下载完成 | **PASS** |
+| 4 | 拉取 redis:7-alpine | 3.4s，8/8 layers 下载完成 | **PASS** |
 | 5 | 运行 debian 容器 | `PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"` | **PASS** |
 | 6 | 运行 redis 容器 | `Redis server v=7.4.7` | **PASS** |
 | 7 | OutpostImage 日志无上游回退 | 所有 manifests/blobs 均由本地 store 响应 | **PASS** |
@@ -304,23 +304,25 @@ bookworm-slim: Pulling from debian
 Digest: sha256:42a264b6a07c8501a0677b301d5e4510f9bdd2949c3c7e7ff412a272b6e088c0
 Status: Downloaded newer image for 192.168.1.102:15000/debian:bookworm-slim
 
-real  0m9.613s
+real  0m6.559s
 
 7-alpine: Pulling from redis
 ...8 layers...
 Digest: sha256:b83d46a040c0abed26e3cdbf44ca4ff5e8f9c78ab6d0b1a3675bc54aabf9a0b9
 Status: Downloaded newer image for 192.168.1.102:15000/redis:7-alpine
 
-real  0m6.772s
+real  0m3.367s
 ```
 
 ### OutpostImage 路由日志（无上游路由）
 
 ```json
-{"msg":"manifest served from local","source":"local","path":"/v2/debian/manifests/bookworm-slim"}
-{"msg":"routing blob to local (direct)","source":"local","path":"/v2/debian/blobs/sha256:5712ebd7..."}
-{"msg":"manifest served from local","source":"local","path":"/v2/redis/manifests/7-alpine"}
-{"msg":"routing blob to local (direct)","source":"local","path":"/v2/redis/blobs/sha256:34c35a53..."}
+{"msg":"manifest built (lazy)","config":"sha256:d1c8cb62...","layers":1}
+{"msg":"request","server":"registry","method":"HEAD","path":"/v2/debian/manifests/bookworm-slim","status":200}
+{"msg":"request","server":"registry","method":"GET","path":"/v2/debian/manifests/sha256:d1c8cb62...","status":200}
+{"msg":"manifest built (lazy)","config":"sha256:d050212b...","layers":8}
+{"msg":"request","server":"registry","method":"HEAD","path":"/v2/redis/manifests/7-alpine","status":200}
+{"msg":"request","server":"registry","method":"GET","path":"/v2/redis/manifests/sha256:d050212b...","status":200}
 ```
 
 grep `"routing.*upstream"` 过滤 manifest/blob 请求 → **0 条记录**
@@ -378,9 +380,8 @@ $ ldd outpostimage-static
 ### VP-5 Prometheus Metrics（离线测试结束后）
 
 ```
-outpostimage_http_requests_total{method="CONNECT",path=".",server="proxy"} 17
 outpostimage_http_requests_total{method="GET",path="/v2",server="registry"} 15
-outpostimage_http_requests_total{method="HEAD",path="/v2",server="registry"} 10
+outpostimage_http_requests_total{method="HEAD",path="/v2",server="registry"} 2
 ```
 
 ---
