@@ -7,20 +7,37 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/opencontainers/go-digest"
 
 	"github.com/outpostos/outpostimage/pkg/oci"
 )
 
+// manifestEntry caches a served manifest by its content digest.
+type manifestEntry struct {
+	data      []byte
+	mediaType string
+}
+
 // OCIHandler implements the OCI Distribution Spec v2 endpoints.
 type OCIHandler struct {
 	store oci.Store
+
+	// manifestCache maps content-digest → manifest bytes+mediaType.
+	// containerd fetches a manifest by tag, then re-fetches by the
+	// Docker-Content-Digest it received, so we must be able to serve
+	// the same manifest by its content hash.
+	mu            sync.RWMutex
+	manifestCache map[digest.Digest]manifestEntry
 }
 
 // NewOCIHandler creates a new OCIHandler backed by the given store.
 func NewOCIHandler(store oci.Store) *OCIHandler {
-	return &OCIHandler{store: store}
+	return &OCIHandler{
+		store:         store,
+		manifestCache: make(map[digest.Digest]manifestEntry),
+	}
 }
 
 // RegisterRoutes registers the OCI Distribution API routes on the given mux.
@@ -74,32 +91,61 @@ func (h *OCIHandler) handleVersionCheck(w http.ResponseWriter, r *http.Request) 
 func (h *OCIHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, name, reference string) {
 	ctx := r.Context()
 
-	var dgst digest.Digest
-	var err error
-
+	// If the reference is a digest, check the content-digest cache first.
+	// containerd fetches manifests by tag, then re-fetches by the
+	// Docker-Content-Digest it received in the first response.
 	if strings.HasPrefix(reference, "sha256:") {
-		dgst, err = digest.Parse(reference)
+		contentDgst, err := digest.Parse(reference)
 		if err != nil {
 			writeOCIError(w, http.StatusBadRequest, "DIGEST_INVALID", "invalid digest format", reference)
 			return
 		}
-	} else {
-		ref := name + ":" + reference
-		dgst, err = h.store.Resolve(ctx, ref)
+
+		h.mu.RLock()
+		cached, ok := h.manifestCache[contentDgst]
+		h.mu.RUnlock()
+
+		if ok {
+			w.Header().Set("Content-Type", cached.mediaType)
+			w.Header().Set("Content-Length", strconv.Itoa(len(cached.data)))
+			w.Header().Set("Docker-Content-Digest", contentDgst.String())
+			w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+			w.Write(cached.data)
+			return
+		}
+
+		// Fall through: try the store directly with this digest
+		data, mediaType, err := h.store.GetManifest(ctx, contentDgst)
 		if err != nil {
-			// If the proxy forwarded the original registry host, try with it as prefix.
-			// e.g., name="test/debian" + host="ghcr.io" → "ghcr.io/test/debian:bookworm-slim"
-			origHost := r.Header.Get("X-Original-Registry")
-			if origHost != "" {
-				// Strip port and common suffixes for tag lookup
-				host := strings.Split(origHost, ":")[0]
-				hostRef := host + "/" + name + ":" + reference
-				dgst, err = h.store.Resolve(ctx, hostRef)
-			}
-			if err != nil {
-				writeOCIError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown to registry", ref)
-				return
-			}
+			writeOCIError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown to registry", contentDgst.String())
+			return
+		}
+		actualDigest := digest.FromBytes(data)
+		w.Header().Set("Content-Type", mediaType)
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		w.Header().Set("Docker-Content-Digest", actualDigest.String())
+		w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+		w.Write(data)
+		return
+	}
+
+	// Tag-based lookup
+	var dgst digest.Digest
+	var err error
+
+	ref := name + ":" + reference
+	dgst, err = h.store.Resolve(ctx, ref)
+	if err != nil {
+		// If the proxy forwarded the original registry host, try with it as prefix.
+		origHost := r.Header.Get("X-Original-Registry")
+		if origHost != "" {
+			host := strings.Split(origHost, ":")[0]
+			hostRef := host + "/" + name + ":" + reference
+			dgst, err = h.store.Resolve(ctx, hostRef)
+		}
+		if err != nil {
+			writeOCIError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown to registry", ref)
+			return
 		}
 	}
 
@@ -109,8 +155,18 @@ func (h *OCIHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, n
 		return
 	}
 
+	// Docker-Content-Digest must be the actual hash of the manifest bytes,
+	// not the config digest used as a lookup key. containerd validates this.
+	contentDigest := digest.FromBytes(data)
+
+	// Cache by content digest so containerd can re-fetch by digest.
+	h.mu.Lock()
+	h.manifestCache[contentDigest] = manifestEntry{data: data, mediaType: mediaType}
+	h.mu.Unlock()
+
 	w.Header().Set("Content-Type", mediaType)
-	w.Header().Set("Docker-Content-Digest", dgst.String())
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("Docker-Content-Digest", contentDigest.String())
 	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
 	w.Write(data)
 }

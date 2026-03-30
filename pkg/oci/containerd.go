@@ -89,14 +89,54 @@ func (cs *ContainerdStore) ListImages(_ context.Context) ([]Image, error) {
 }
 
 // Resolve resolves a repo:tag reference to a manifest digest.
+// containerd stores full references like "docker.io/library/nginx:latest",
+// so we try multiple variants to handle Docker-style short names.
 func (cs *ContainerdStore) Resolve(_ context.Context, ref string) (digest.Digest, error) {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
-	d, ok := cs.tags[ref]
-	if !ok {
+
+	// Exact match
+	if d, ok := cs.tags[ref]; ok {
+		return d, nil
+	}
+
+	parts := strings.SplitN(ref, ":", 2)
+	if len(parts) != 2 {
 		return "", fmt.Errorf("reference not found: %s", ref)
 	}
-	return d, nil
+	name, tag := parts[0], parts[1]
+
+	// Try with docker.io/ prefix (containerd's canonical form)
+	if !strings.Contains(name, ".") && !strings.Contains(name, "/") {
+		// bare name like "redis" → try docker.io/library/redis
+		candidate := "docker.io/library/" + name + ":" + tag
+		if d, ok := cs.tags[candidate]; ok {
+			return d, nil
+		}
+	}
+
+	// library/redis → docker.io/library/redis
+	if strings.HasPrefix(name, "library/") {
+		candidate := "docker.io/" + name + ":" + tag
+		if d, ok := cs.tags[candidate]; ok {
+			return d, nil
+		}
+		// Also try without library/ prefix
+		short := strings.TrimPrefix(name, "library/") + ":" + tag
+		if d, ok := cs.tags[short]; ok {
+			return d, nil
+		}
+	}
+
+	// docker.io/library/redis → try without docker.io/ prefix
+	if strings.HasPrefix(name, "docker.io/") {
+		short := strings.TrimPrefix(name, "docker.io/") + ":" + tag
+		if d, ok := cs.tags[short]; ok {
+			return d, nil
+		}
+	}
+
+	return "", fmt.Errorf("reference not found: %s", ref)
 }
 
 // GetManifest returns the manifest bytes and media type for the given digest.
@@ -258,13 +298,36 @@ func (cs *ContainerdStore) scanContentStore() error {
 }
 
 // loadMetadataDB reads the containerd bolt metadata DB to extract image and tag information.
+// Since the containerd daemon holds an exclusive lock on meta.db, we copy it to a
+// temporary file first so we can open it without contention.
 func (cs *ContainerdStore) loadMetadataDB() error {
 	dbPath := cs.metaDBPath()
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		return fmt.Errorf("metadata DB not found: %s", dbPath)
 	}
 
-	db, err := bolt.Open(dbPath, 0400, &bolt.Options{
+	// Copy DB to temp file to avoid lock contention with containerd daemon.
+	tmpFile, err := os.CreateTemp("", "outpostimage-meta-*.db")
+	if err != nil {
+		return fmt.Errorf("create temp DB: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	src, err := os.Open(dbPath)
+	if err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("open source DB: %w", err)
+	}
+	if _, err := io.Copy(tmpFile, src); err != nil {
+		src.Close()
+		tmpFile.Close()
+		return fmt.Errorf("copy DB: %w", err)
+	}
+	src.Close()
+	tmpFile.Close()
+
+	db, err := bolt.Open(tmpPath, 0400, &bolt.Options{
 		ReadOnly: true,
 		Timeout:  2 * time.Second,
 	})
@@ -301,28 +364,24 @@ func (cs *ContainerdStore) loadMetadataDB() error {
 					return nil
 				}
 
-				targetData := imageBucket.Get([]byte("target"))
-				if targetData == nil {
+				// containerd stores target as a sub-bucket with
+				// keys: digest, mediatype, size
+				targetBucket := imageBucket.Bucket([]byte("target"))
+				if targetBucket == nil {
 					return nil
 				}
 
-				var target struct {
-					MediaType string `json:"mediaType"`
-					Digest    string `json:"digest"`
-					Size      int64  `json:"size"`
-				}
-				if err := json.Unmarshal(targetData, &target); err != nil {
-					slog.Warn("failed to parse image target", "image", string(imageKey), "error", err)
+				digestBytes := targetBucket.Get([]byte("digest"))
+				if digestBytes == nil {
 					return nil
 				}
 
-				dgst, err := digest.Parse(target.Digest)
+				dgst, err := digest.Parse(string(digestBytes))
 				if err != nil {
 					return nil
 				}
 
 				imageName := string(imageKey)
-				// Parse image reference into repo:tag format
 				ref := normalizeImageRef(imageName)
 				cs.tags[ref] = dgst
 
