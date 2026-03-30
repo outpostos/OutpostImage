@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OutpostImage — P2P OCI Image Distribution for Edge Computing</title>
+  <meta name="description" content="OutpostImage turns every edge node into a zero-overhead OCI registry by reusing the local Docker/containerd image store, enabling node-to-node P2P image sharing without extra storage." />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- Navigation -->
+<nav>
+  <div class="container">
+    <span class="nav-brand">Outpost<span class="dot">Image</span></span>
+    <ul class="nav-links">
+      <li><a href="#how-it-works">How It Works</a></li>
+      <li><a href="#features">Features</a></li>
+      <li><a href="#comparison">vs Spegel</a></li>
+      <li><a href="#quickstart">Quick Start</a></li>
+      <li><a href="https://github.com/outpostos/outpostimage">GitHub</a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="container">
+    <div class="hero-badge">&#x1f4e1; v1.0 — Now Available</div>
+    <h1>P2P OCI Image Distribution<br />for <span>Edge Computing</span></h1>
+    <p class="hero-tagline">
+      OutpostImage turns every edge node into a zero-overhead OCI registry by
+      reusing the local Docker/containerd image store — enabling node-to-node
+      image sharing at LAN speed, without extra storage.
+    </p>
+    <div class="hero-actions">
+      <a href="#quickstart" class="btn btn-primary">
+        &#9654; Get Started
+      </a>
+      <a href="https://github.com/outpostos/outpostimage" class="btn btn-outline">
+        &#128196; View on GitHub
+      </a>
+      <a href="https://github.com/outpostos/outpostimage/releases" class="btn btn-outline">
+        &#11015; Releases
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- Architecture -->
+<section id="architecture">
+  <div class="container">
+    <h2>Architecture</h2>
+    <p class="section-sub">OutpostImage runs as a transparent HTTP proxy on every edge node.</p>
+
+    <div class="arch-wrap">
+      <div class="arch-diagram">
+
+        <!-- OCI Clients -->
+        <div class="arch-node-group">
+          <div class="group-label">Edge Node</div>
+          <div class="arch-row">
+            <div class="arch-box dim">containerd</div>
+            <div class="arch-box dim">dockerd</div>
+            <div class="arch-box dim">any OCI client</div>
+          </div>
+          <div style="text-align:center; margin: 8px 0; color: var(--text-muted); font-size: 0.75rem; font-family: var(--font-mono);">
+            HTTP_PROXY=http://localhost:3128
+          </div>
+
+          <!-- Arrow down to proxy -->
+          <div class="arch-arrow">
+            <div class="line"></div>
+            &#8595;
+          </div>
+
+          <!-- Proxy -->
+          <div class="arch-row" style="margin-bottom: 16px;">
+            <div class="arch-box accent">OutpostImage HTTP Proxy &nbsp;:3128</div>
+          </div>
+
+          <!-- Split: Local Store + P2P Peers -->
+          <div class="arch-split">
+            <div class="arch-branch">
+              <div class="arch-arrow"><div class="line"></div>&#8595;</div>
+              <div class="arch-box green">Local Store<br /><span style="font-size:0.75em">(Docker / containerd)</span></div>
+            </div>
+            <div class="arch-branch">
+              <div class="arch-arrow"><div class="line"></div>&#8595;</div>
+              <div class="arch-box green">P2P Peers<br /><span style="font-size:0.75em">:5000 registry API</span></div>
+              <div class="arch-label">other edge nodes</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Cache miss arrow -->
+        <div class="arch-arrow">
+          <div class="line"></div>
+          <span style="font-size:0.75rem; color: var(--orange);">cache miss</span>
+          <div class="line"></div>
+          &#8595;
+        </div>
+
+        <!-- Upstream -->
+        <div class="arch-upstream">
+          &#127760; Upstream Registry<br />(internet)
+        </div>
+
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- How It Works -->
+<section id="how-it-works">
+  <div class="container">
+    <h2>How It Works</h2>
+    <p class="section-sub">Six steps from pull request to cached image.</p>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-text">
+          Docker / containerd is configured with <code>HTTP_PROXY=http://localhost:3128</code>
+          to route all registry traffic through OutpostImage.
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-text">
+          <strong>OutpostImage intercepts image pull requests</strong> via the HTTP proxy — no registry mirror config required.
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-text">
+          For HTTPS registries, the proxy performs <strong>MITM with a locally-generated CA certificate</strong>
+          to inspect and rewrite traffic.
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-text">
+          The proxy <strong>checks if any P2P peer has the requested blob or manifest</strong>
+          by querying each peer's <code>/api/v1/digests/{digest}</code> endpoint.
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">5</div>
+        <div class="step-text">
+          <strong>Found in P2P network?</strong> Serve the blob directly from a peer at LAN speed.
+          No internet bandwidth consumed.
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">6</div>
+        <div class="step-text">
+          <strong>Not found?</strong> Forward the request to the upstream registry over the internet,
+          then cache locally for future P2P sharing.
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section id="features">
+  <div class="container">
+    <h2>Key Features</h2>
+    <p class="section-sub">Built for edge deployments where bandwidth and storage are constrained.</p>
+
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon">&#x1f433;</div>
+        <h3>Docker + containerd</h3>
+        <p>Works with both Docker and containerd via HTTP proxy — no daemon config changes required.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">&#x1f4be;</div>
+        <h3>Zero Extra Storage</h3>
+        <p>Reuses the existing Docker or containerd image store. Blobs are never duplicated on disk.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">&#x1f310;</div>
+        <h3>P2P Mesh Network</h3>
+        <p>Static peer lists and mDNS auto-discovery build a LAN-speed mesh across all edge nodes.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">&#x1f50c;</div>
+        <h3>HTTP Proxy Interception</h3>
+        <p>A single <code>HTTP_PROXY</code> env var is all you need. Zero-intrusion deployment.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">&#x1f4ca;</div>
+        <h3>Prometheus Metrics</h3>
+        <p>Built-in metrics endpoint at <code>:9090</code> plus <code>/healthz</code> and <code>/readyz</code> probes.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">&#x1f4dd;</div>
+        <h3>OCI Distribution Spec</h3>
+        <p>Fully compliant OCI registry API at <code>:5000</code> — compatible with any OCI-conformant client.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">&#x1f4e1;</div>
+        <h3>Multi-Registry</h3>
+        <p>Works with Docker Hub, GHCR, ECR, and any other OCI-compatible registry simultaneously.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">&#x2699;&#xfe0f;</div>
+        <h3>Fully Configurable</h3>
+        <p>All options available as CLI flags or environment variables. Hot-reloading peers file supported.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Comparison -->
+<section id="comparison">
+  <div class="container">
+    <h2>OutpostImage vs Spegel</h2>
+    <p class="section-sub">Both solve P2P image distribution — OutpostImage targets broader runtime compatibility.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Feature</th>
+            <th>Spegel</th>
+            <th>OutpostImage</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Runtime support</td>
+            <td>containerd only</td>
+            <td class="check-better">Docker + containerd</td>
+          </tr>
+          <tr>
+            <td>Interception method</td>
+            <td>containerd mirror config</td>
+            <td class="check-better"><code>HTTP_PROXY</code> env var</td>
+          </tr>
+          <tr>
+            <td>Extra storage</td>
+            <td class="check-yes">None (containerd reuse)</td>
+            <td class="check-yes">None (Docker/containerd reuse)</td>
+          </tr>
+          <tr>
+            <td>P2P discovery</td>
+            <td>OCI / libp2p</td>
+            <td>Static peers + mDNS</td>
+          </tr>
+          <tr>
+            <td>Multi-registry</td>
+            <td class="check-yes">Yes</td>
+            <td class="check-yes">Yes</td>
+          </tr>
+          <tr>
+            <td>Invasiveness</td>
+            <td>Modifies containerd config</td>
+            <td class="check-better">Zero-intrusion (env var only)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- Quick Start -->
+<section id="quickstart">
+  <div class="container">
+    <h2>Quick Start</h2>
+    <p class="section-sub">Up and running in minutes on any Linux node.</p>
+
+    <div class="quickstart-tabs">
+      <button class="tab-btn active" onclick="switchTab('binary')">Binary</button>
+      <button class="tab-btn" onclick="switchTab('docker')">Docker</button>
+      <button class="tab-btn" onclick="switchTab('compose')">Docker Compose</button>
+      <button class="tab-btn" onclick="switchTab('proxy')">Configure Proxy</button>
+    </div>
+
+    <div id="tab-binary" class="tab-panel active">
+      <pre><code><span class="comment"># Download the latest binary</span>
+curl -L https://github.com/outpostos/outpostimage/releases/latest/download/outpostimage-linux-amd64 \
+  -o /usr/local/bin/outpostimage &amp;&amp; chmod +x /usr/local/bin/outpostimage
+
+<span class="comment"># Run with defaults (auto-detects Docker or containerd store)</span>
+<span class="cmd">outpostimage registry</span>
+
+<span class="comment"># Run with explicit peers</span>
+<span class="cmd">outpostimage registry --peers node2:5000 --peers node3:5000</span></code></pre>
+    </div>
+
+    <div id="tab-docker" class="tab-panel">
+      <pre><code>docker run -d \
+  --name outpostimage \
+  --network host \
+  -v /var/lib/docker:/var/lib/docker:ro \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  outpostimage:latest registry</code></pre>
+    </div>
+
+    <div id="tab-compose" class="tab-panel">
+      <pre><code>git clone https://github.com/outpostos/outpostimage
+cd outpostimage
+
+<span class="comment"># Optional: create peers.txt with other node addresses</span>
+echo "192.168.1.101:5000" &gt; peers.txt
+echo "192.168.1.102:5000" &gt;&gt; peers.txt
+
+<span class="cmd">docker compose up -d</span></code></pre>
+    </div>
+
+    <div id="tab-proxy" class="tab-panel">
+      <pre><code><span class="comment"># /etc/docker/daemon.json — point Docker at the proxy</span>
+{
+  "proxies": {
+    "http-proxy":  "http://localhost:3128",
+    "https-proxy": "http://localhost:3128"
+  }
+}
+
+<span class="comment"># Trust the OutpostImage CA certificate</span>
+cp /etc/outpostimage/ca.crt /usr/local/share/ca-certificates/outpostimage-ca.crt
+update-ca-certificates</code></pre>
+    </div>
+
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <div class="container">
+    <div class="footer-links">
+      <a href="https://github.com/outpostos/outpostimage">GitHub</a>
+      <a href="https://github.com/outpostos/outpostimage/releases">Releases</a>
+      <a href="https://github.com/outpostos/outpostimage/blob/main/docs/api-reference.md">API Docs</a>
+      <a href="https://github.com/outpostos/outpostimage/blob/main/docs/deployment-guide.md">Deployment Guide</a>
+    </div>
+    <p>OutpostImage — P2P OCI image distribution for edge computing.</p>
+  </div>
+</footer>
+
+<script>
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
+  document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
+  document.querySelector('[onclick="switchTab(\'' + name + '\')"]').classList.add('active');
+  document.getElementById('tab-' + name).classList.add('active');
+}
+</script>
+
+</body>
+</html>
