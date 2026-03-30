@@ -116,14 +116,57 @@ func (ds *DockerStore) ListImages(_ context.Context) ([]Image, error) {
 }
 
 // Resolve resolves a repo:tag reference to a config digest.
+// It tries several normalizations for Docker Hub official images:
+//   - exact match (e.g., "docker.io/library/redis:7-alpine")
+//   - with docker.io/ prefix (e.g., "library/redis:7-alpine" → "docker.io/library/redis:7-alpine")
+//   - without library/ prefix (e.g., "library/redis:7-alpine" → "redis:7-alpine")
+//   - short form for docker.io/library (e.g., "redis:7-alpine" → "library/redis:7-alpine")
 func (ds *DockerStore) Resolve(_ context.Context, ref string) (digest.Digest, error) {
 	ds.mu.RLock()
-	d, ok := ds.tags[ref]
-	ds.mu.RUnlock()
-	if !ok {
+	defer ds.mu.RUnlock()
+
+	// Exact match
+	if d, ok := ds.tags[ref]; ok {
+		return d, nil
+	}
+
+	// Split into name and tag for normalization
+	parts := strings.SplitN(ref, ":", 2)
+	if len(parts) != 2 {
 		return "", fmt.Errorf("reference not found: %s", ref)
 	}
-	return d, nil
+	name, tag := parts[0], parts[1]
+
+	// Try with docker.io/ prefix: library/redis → docker.io/library/redis
+	if !strings.Contains(name, ".") {
+		candidate := "docker.io/" + name + ":" + tag
+		if d, ok := ds.tags[candidate]; ok {
+			return d, nil
+		}
+	}
+
+	// Strip library/ prefix: library/redis → redis
+	if strings.HasPrefix(name, "library/") {
+		short := strings.TrimPrefix(name, "library/") + ":" + tag
+		if d, ok := ds.tags[short]; ok {
+			return d, nil
+		}
+	}
+
+	// Add library/ prefix: redis → library/redis
+	if !strings.Contains(name, "/") {
+		candidate := "library/" + name + ":" + tag
+		if d, ok := ds.tags[candidate]; ok {
+			return d, nil
+		}
+		// Also try docker.io/library/
+		candidate = "docker.io/library/" + name + ":" + tag
+		if d, ok := ds.tags[candidate]; ok {
+			return d, nil
+		}
+	}
+
+	return "", fmt.Errorf("reference not found: %s", ref)
 }
 
 // GetManifest returns a distribution manifest for the given config digest.

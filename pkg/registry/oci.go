@@ -87,8 +87,19 @@ func (h *OCIHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, n
 		ref := name + ":" + reference
 		dgst, err = h.store.Resolve(ctx, ref)
 		if err != nil {
-			writeOCIError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown to registry", ref)
-			return
+			// If the proxy forwarded the original registry host, try with it as prefix.
+			// e.g., name="test/debian" + host="ghcr.io" → "ghcr.io/test/debian:bookworm-slim"
+			origHost := r.Header.Get("X-Original-Registry")
+			if origHost != "" {
+				// Strip port and common suffixes for tag lookup
+				host := strings.Split(origHost, ":")[0]
+				hostRef := host + "/" + name + ":" + reference
+				dgst, err = h.store.Resolve(ctx, hostRef)
+			}
+			if err != nil {
+				writeOCIError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown to registry", ref)
+				return
+			}
 		}
 	}
 

@@ -123,8 +123,14 @@ func RequestRouter(tracker *state.Tracker, localAddr string, router ...routing.R
 
 		// For manifest requests, try local then P2P before falling back to upstream
 		if strings.Contains(path, "/manifests/") {
+			// Extract original registry host for tag resolution
+			origHost := r.URL.Host
+			if origHost == "" {
+				origHost = r.Host
+			}
+
 			// Try local registry first
-			if tryManifestFrom(r.Context(), w, localAddr, path) {
+			if tryManifestFrom(r.Context(), w, localAddr, path, origHost) {
 				slog.Info("manifest served from local", "source", RouteLocal, "path", path)
 				return true
 			}
@@ -133,7 +139,7 @@ func RequestRouter(tracker *state.Tracker, localAddr string, router ...routing.R
 			if p2pRouter != nil {
 				peers := healthyPeersFromRouter(r.Context(), p2pRouter)
 				for _, peer := range peers {
-					if tryManifestFrom(r.Context(), w, peer, path) {
+					if tryManifestFrom(r.Context(), w, peer, path, origHost) {
 						slog.Info("manifest served from P2P", "source", RouteP2P, "path", path, "peer", peer)
 						return true
 					}
@@ -144,7 +150,17 @@ func RequestRouter(tracker *state.Tracker, localAddr string, router ...routing.R
 			return false
 		}
 
-		// Version check /v2/ - always forward to see if upstream is available
+		// Version check /v2/ - respond locally so MITM proxy clients don't
+		// need to reach the upstream registry for the handshake.
+		if path == "/v2/" || path == "/v2" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("{}"))
+			slog.Info("v2 version check served locally", "source", RouteLocal, "path", path)
+			return true
+		}
+
 		slog.Debug("routing to upstream", "source", RouteUpstream, "path", path)
 		return false
 	}
@@ -194,13 +210,19 @@ func tryBlobFromLocal(ctx context.Context, addr, path string) bool {
 // It makes a GET request; if the response is 200, it writes to w and returns true.
 // On any failure or non-200, it returns false without touching w.
 // addr may include a scheme prefix ("https://host:port") for HTTPS peers; defaults to HTTP.
-func tryManifestFrom(ctx context.Context, w http.ResponseWriter, addr, path string) bool {
+// origHost is the original registry host (e.g., "ghcr.io") for tag resolution.
+func tryManifestFrom(ctx context.Context, w http.ResponseWriter, addr, path string, origHost string) bool {
 	scheme, hostport := peerSchemeAndAddr(addr)
 	url := scheme + "://" + hostport + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		slog.Debug("tryManifestFrom: request creation failed", "addr", addr, "error", err)
 		return false
+	}
+	// Pass original registry host so the OCI handler can resolve tags
+	// stored with registry prefix (e.g., "ghcr.io/test/debian:latest")
+	if origHost != "" {
+		req.Header.Set("X-Original-Registry", origHost)
 	}
 	resp, err := peerClient(scheme).Do(req)
 	if err != nil {
