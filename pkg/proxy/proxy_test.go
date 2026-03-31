@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"bufio"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -121,5 +123,120 @@ func TestCopyHeaders_SkipsHopByHop(t *testing.T) {
 	}
 	if dst.Get("X-Custom") != "value" {
 		t.Error("X-Custom should be copied")
+	}
+}
+
+func TestHostOnly(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"localhost:5000", "localhost"},
+		{"registry.example.com:443", "registry.example.com"},
+		{"192.168.1.1:8080", "192.168.1.1"},
+		{"localhost", "localhost"},
+		{"registry.example.com", "registry.example.com"},
+	}
+	for _, tt := range tests {
+		got := hostOnly(tt.input)
+		if got != tt.want {
+			t.Errorf("hostOnly(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestWithInsecureRegistries(t *testing.T) {
+	p := NewProxy(nil)
+	p2 := p.WithInsecureRegistries([]string{"insecure.local:5000"})
+	if p2 != p {
+		t.Error("WithInsecureRegistries should return self")
+	}
+	if !p.isInsecureRegistry("insecure.local:5000") {
+		t.Error("expected insecure.local:5000 to match")
+	}
+}
+
+func TestIsInsecureRegistry(t *testing.T) {
+	p := NewProxy(nil).WithInsecureRegistries([]string{
+		"exact.local:5000",
+		"noport.local",
+	})
+
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"exact.local:5000", true},
+		{"exact.local:9999", false},
+		{"noport.local:1234", true},
+		{"noport.local:5000", true},
+		{"other.local:5000", false},
+	}
+	for _, tt := range tests {
+		got := p.isInsecureRegistry(tt.host)
+		if got != tt.want {
+			t.Errorf("isInsecureRegistry(%q) = %v, want %v", tt.host, got, tt.want)
+		}
+	}
+}
+
+func TestBufferedResponseWriter(t *testing.T) {
+	w := newBufferedResponseWriter()
+	w.Header().Set("X-Test", "hello")
+	w.WriteHeader(http.StatusCreated)
+	w.Write([]byte("body content"))
+
+	if w.statusCode != http.StatusCreated {
+		t.Errorf("statusCode = %d, want %d", w.statusCode, http.StatusCreated)
+	}
+	if string(w.body) != "body content" {
+		t.Errorf("body = %q, want %q", w.body, "body content")
+	}
+	if w.header.Get("X-Test") != "hello" {
+		t.Error("header not set")
+	}
+}
+
+func TestWriteHTTPError(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	go func() {
+		writeHTTPError(server, http.StatusBadGateway, "bad gateway")
+		server.Close()
+	}()
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadGateway)
+	}
+}
+
+func TestBufferedResponseWriter_WriteTo(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	w := newBufferedResponseWriter()
+	w.WriteHeader(http.StatusAccepted)
+	w.Write([]byte("test body"))
+
+	go func() {
+		w.WriteTo(server)
+		server.Close()
+	}()
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusAccepted)
 	}
 }

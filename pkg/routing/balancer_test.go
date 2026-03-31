@@ -72,3 +72,67 @@ func TestBalancer_Len(t *testing.T) {
 		}
 	}
 }
+
+func TestNewLatencyBalancer_Empty(t *testing.T) {
+	b := NewLatencyBalancer(nil, nil)
+	_, ok := b.Next()
+	if ok {
+		t.Error("expected false for empty balancer")
+	}
+}
+
+func TestNewLatencyBalancer_AllKnown(t *testing.T) {
+	peers := []string{"fast:5000", "slow:5000"}
+	latencies := map[string]float64{
+		"fast:5000": 0.01,
+		"slow:5000": 1.0,
+	}
+	b := NewLatencyBalancer(peers, latencies)
+	if b.Len() != 2 {
+		t.Fatalf("expected 2 peers, got %d", b.Len())
+	}
+
+	fastCount := 0
+	const iterations = 1000
+	for i := 0; i < iterations; i++ {
+		p, ok := b.Next()
+		if !ok {
+			t.Fatal("Next returned false")
+		}
+		if p == "fast:5000" {
+			fastCount++
+		}
+	}
+	// With inverse-latency weights: fast has ~100x weight, expect >>50% for fast
+	if fastCount < 700 {
+		t.Errorf("expected fast peer to win majority, got %d/%d", fastCount, iterations)
+	}
+}
+
+func TestNewLatencyBalancer_UnknownPeers(t *testing.T) {
+	peers := []string{"a:5000", "b:5000"}
+	b := NewLatencyBalancer(peers, map[string]float64{})
+	if b.Len() != 2 {
+		t.Fatalf("expected 2 peers")
+	}
+	seen := map[string]bool{}
+	for i := 0; i < 200; i++ {
+		p, ok := b.Next()
+		if !ok {
+			t.Fatal("Next returned false")
+		}
+		seen[p] = true
+	}
+	if !seen["a:5000"] || !seen["b:5000"] {
+		t.Errorf("expected both peers to be selected, got %v", seen)
+	}
+}
+
+func TestNewLatencyBalancer_ZeroLatency(t *testing.T) {
+	peers := []string{"a:5000"}
+	b := NewLatencyBalancer(peers, map[string]float64{"a:5000": 0})
+	p, ok := b.Next()
+	if !ok || p != "a:5000" {
+		t.Errorf("expected a:5000, got %q ok=%v", p, ok)
+	}
+}

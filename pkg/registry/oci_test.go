@@ -253,3 +253,49 @@ func TestOCIErrorFormat(t *testing.T) {
 		t.Fatalf("message = %v, want 'manifest unknown'", errObj["message"])
 	}
 }
+
+func TestParseRangeHeader(t *testing.T) {
+	tests := []struct {
+		header    string
+		totalSize int64
+		wantStart int64
+		wantEnd   int64
+		wantOK    bool
+	}{
+		// Valid ranges
+		{"bytes=0-499", 1000, 0, 499, true},
+		{"bytes=500-999", 1000, 500, 999, true},
+		{"bytes=0-0", 1000, 0, 0, true},
+		// Open-ended range
+		{"bytes=500-", 1000, 500, 999, true},
+		// Suffix range
+		{"bytes=-200", 1000, 800, 999, true},
+		// End beyond total: clamped
+		{"bytes=0-9999", 1000, 0, 999, true},
+		// Suffix larger than total: start clamped to 0
+		{"bytes=-9999", 100, 0, 99, true},
+		// Invalid: no bytes= prefix
+		{"chunks=0-499", 1000, 0, 0, false},
+		// Invalid: start >= totalSize
+		{"bytes=1000-1999", 1000, 0, 0, false},
+		// Invalid: bad start
+		{"bytes=abc-499", 1000, 0, 0, false},
+		// Invalid: end < start
+		{"bytes=500-100", 1000, 0, 0, false},
+		// Invalid: suffix zero
+		{"bytes=-0", 1000, 0, 0, false},
+		// Invalid: suffix negative
+		{"bytes=-abc", 1000, 0, 0, false},
+	}
+	for _, tt := range tests {
+		start, end, ok := parseRangeHeader(tt.header, tt.totalSize)
+		if ok != tt.wantOK {
+			t.Errorf("parseRangeHeader(%q, %d) ok=%v, want %v", tt.header, tt.totalSize, ok, tt.wantOK)
+			continue
+		}
+		if ok && (start != tt.wantStart || end != tt.wantEnd) {
+			t.Errorf("parseRangeHeader(%q, %d) = (%d, %d), want (%d, %d)",
+				tt.header, tt.totalSize, start, end, tt.wantStart, tt.wantEnd)
+		}
+	}
+}
