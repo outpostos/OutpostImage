@@ -2,9 +2,10 @@
 
 IMAGE_NAME ?= ghcr.io/outpostos/outpostimage
 IMAGE_TAG  ?= latest
+VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
 build:
-	go build -buildvcs=false -o bin/outpostimage .
+	go build -buildvcs=false -ldflags="-s -w -X main.version=$(VERSION)" -o bin/outpostimage .
 
 test:
 	go test ./...
@@ -16,7 +17,7 @@ clean:
 	rm -rf bin/ coverage.out coverage.html
 
 docker-build:
-	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) .
+	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE_NAME):$(IMAGE_TAG) .
 
 docker-push:
 	docker push $(IMAGE_NAME):$(IMAGE_TAG)

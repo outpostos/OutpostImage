@@ -13,8 +13,9 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the binary
-RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-s -w" -o outpostimage .
+# Build the binary — VERSION is injected at build time via --build-arg
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X main.version=${VERSION}" -o outpostimage .
 
 # Runtime stage
 FROM alpine:3.19

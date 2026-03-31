@@ -23,6 +23,9 @@ import (
 	"github.com/outpostos/outpostimage/pkg/state"
 )
 
+// version is set at build time via -ldflags "-X main.version=v1.0.0".
+var version = "dev"
+
 // RegistryCmd is the main subcommand that runs the OutpostImage service.
 type RegistryCmd struct {
 	RegistryAddr   string   `arg:"--registry-addr,env:REGISTRY_ADDR" default:":5000" help:"P2P Registry API listen address"`
@@ -51,7 +54,7 @@ func (Args) Description() string {
 }
 
 func (Args) Version() string {
-	return "outpostimage v0.1.0"
+	return "outpostimage " + version
 }
 
 func main() {
@@ -121,6 +124,7 @@ func run(cmd *RegistryCmd) error {
 			Interface: cmd.MDNSInterface,
 			Domain:    cmd.MDNSDomain,
 			Port:      registryPort,
+			Version:   version,
 		})
 		if err := mdnsSvc.Advertise(); err != nil {
 			slog.Warn("mDNS advertise failed", "error", err)
