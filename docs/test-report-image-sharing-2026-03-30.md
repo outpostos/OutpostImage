@@ -1,24 +1,24 @@
-# OutpostImage 节点间镜像共享 — 测试报告
+# OutpostImage Node-to-Node Image Sharing — Test Report
 
-**日期**: 2026-03-30
-**版本**: v0.1.0 (commit `ba2469e`)
-**测试人**: CEO Agent
-**项目**: OutpostImage
+**Date**: 2026-03-30
+**Version**: v0.1.0 (commit `ba2469e`)
+**Tester**: CEO Agent
+**Project**: OutpostImage
 
 ---
 
-## 1. 测试目标
+## 1. Test Objective
 
-验证 OutpostImage 能够实现节点间的容器镜像共享：VM 103 (openyurt-edge-node) 上的 Docker 可以从 T480 (192.168.1.200) 获取镜像。
+Validate that OutpostImage can achieve node-to-node container image sharing: Docker on VM 103 (openyurt-edge-node) can pull images from T480 (192.168.1.200).
 
-## 2. 测试环境
+## 2. Test Environment
 
-| 节点 | 角色 | IP | 操作系统 | Docker 版本 | 说明 |
-|------|------|-----|---------|------------|------|
-| T480 | 镜像源 (Registry) | 192.168.1.200 | Proxmox VE (Linux 6.2.16) | 27.5.1 | Proxmox 宿主机，已有 11 个 Docker 镜像 |
-| VM 103 | 镜像消费者 (Client) | 192.168.1.103 | Ubuntu 20.04.6 LTS | 26.1.3 | Proxmox KVM 虚拟机，2C/2G/30G，新安装 Docker |
+| Node | Role | IP | OS | Docker Version | Notes |
+|------|------|----|----|----|-------|
+| T480 | Image source (Registry) | 192.168.1.200 | Proxmox VE (Linux 6.2.16) | 27.5.1 | Proxmox host, 11 Docker images pre-loaded |
+| VM 103 | Image consumer (Client) | 192.168.1.103 | Ubuntu 20.04.6 LTS | 26.1.3 | Proxmox KVM VM, 2C/2G/30G, fresh Docker install |
 
-### 网络拓扑
+### Network Topology
 
 ```
 T480 (192.168.1.200)          VM 103 (192.168.1.103)
@@ -33,9 +33,9 @@ T480 (192.168.1.200)          VM 103 (192.168.1.103)
 └─────────────────┘           └─────────────────┘
 ```
 
-## 3. OutpostImage 配置
+## 3. OutpostImage Configuration
 
-### T480 (镜像源)
+### T480 (Image Source)
 
 ```bash
 outpostimage registry \
@@ -49,39 +49,39 @@ outpostimage registry \
   --ca-dir=/etc/outpostimage
 ```
 
-启动日志：
+Startup log:
 ```
 docker store initialized: images=11, tags=11, blobs=22, layers=100, layer_blobs=100
 ```
 
-### VM 103 (镜像消费者)
+### VM 103 (Image Consumer)
 
-Docker daemon 配置 (`/etc/docker/daemon.json`):
+Docker daemon config (`/etc/docker/daemon.json`):
 ```json
 {
   "insecure-registries": ["192.168.1.200:15000"]
 }
 ```
 
-## 4. 测试用例及结果
+## 4. Test Cases and Results
 
-### TC-01: OCI Registry API 连通性
+### TC-01: OCI Registry API Connectivity
 
-| 步骤 | 操作 | 预期结果 | 实际结果 | 状态 |
-|------|------|---------|---------|------|
-| 1 | `curl http://192.168.1.200:15000/v2/` | 返回 `{}` | `{}` | PASS |
-| 2 | `curl http://192.168.1.200:15000/api/v1/digests` | 返回 digest 列表 | 11 digests | PASS |
-| 3 | 从 VM 103 访问 T480 registry | 同上 | 同上 | PASS |
+| Step | Operation | Expected | Actual | Status |
+|------|-----------|---------|--------|--------|
+| 1 | `curl http://192.168.1.200:15000/v2/` | Returns `{}` | `{}` | PASS |
+| 2 | `curl http://192.168.1.200:15000/api/v1/digests` | Returns digest list | 11 digests | PASS |
+| 3 | Access T480 registry from VM 103 | Same as above | Same as above | PASS |
 
-### TC-02: 单层镜像拉取 (debian:bookworm-slim)
+### TC-02: Single-Layer Image Pull (debian:bookworm-slim)
 
-| 步骤 | 操作 | 预期结果 | 实际结果 | 状态 |
-|------|------|---------|---------|------|
-| 1 | 获取 manifest | schemaVersion=2, 1 layer | 返回正确的 distribution manifest | PASS |
-| 2 | `docker pull 192.168.1.200:15000/debian:bookworm-slim` | Pull 成功 | 下载并校验通过 | PASS |
-| 3 | `docker run --rm ... cat /etc/debian_version` | 输出 Debian 版本 | `12.13` | PASS |
+| Step | Operation | Expected | Actual | Status |
+|------|-----------|---------|--------|--------|
+| 1 | Fetch manifest | schemaVersion=2, 1 layer | Correct distribution manifest returned | PASS |
+| 2 | `docker pull 192.168.1.200:15000/debian:bookworm-slim` | Pull successful | Downloaded and checksum verified | PASS |
+| 3 | `docker run --rm ... cat /etc/debian_version` | Output Debian version | `12.13` | PASS |
 
-Pull 输出：
+Pull output:
 ```
 bookworm-slim: Pulling from debian
 5712ebd750aa: Pull complete
@@ -89,7 +89,7 @@ Digest: sha256:42a264b6a07c8501a0677b301d5e4510f9bdd2949c3c7e7ff412a272b6e088c0
 Status: Downloaded newer image for 192.168.1.200:15000/debian:bookworm-slim
 ```
 
-Manifest 详情：
+Manifest details:
 ```json
 {
   "schemaVersion": 2,
@@ -109,15 +109,15 @@ Manifest 详情：
 }
 ```
 
-### TC-03: 多层镜像拉取 (redis:7-alpine, 8 layers)
+### TC-03: Multi-Layer Image Pull (redis:7-alpine, 8 layers)
 
-| 步骤 | 操作 | 预期结果 | 实际结果 | 状态 |
-|------|------|---------|---------|------|
-| 1 | 获取 manifest | schemaVersion=2, 8 layers | 返回正确的 8 层 distribution manifest | PASS |
-| 2 | `docker pull 192.168.1.200:15000/redis:7-alpine` | Pull 成功 | 8 层全部下载并校验通过 | PASS |
-| 3 | `docker run --rm ... redis-server --version` | 输出 Redis 版本 | `Redis server v=7.4.7` | PASS |
+| Step | Operation | Expected | Actual | Status |
+|------|-----------|---------|--------|--------|
+| 1 | Fetch manifest | schemaVersion=2, 8 layers | Correct 8-layer distribution manifest returned | PASS |
+| 2 | `docker pull 192.168.1.200:15000/redis:7-alpine` | Pull successful | All 8 layers downloaded and checksum verified | PASS |
+| 3 | `docker run --rm ... redis-server --version` | Output Redis version | `Redis server v=7.4.7` | PASS |
 
-Pull 输出：
+Pull output:
 ```
 7-alpine: Pulling from redis
 34c35a53577f: Pull complete
@@ -132,16 +132,16 @@ Digest: sha256:1204e164683759497befc680d80c8afbdffde0e9d6a1c6c94f4b8c1dba0f7701
 Status: Downloaded newer image for 192.168.1.200:15000/redis:7-alpine
 ```
 
-### TC-04: 镜像完整性验证
+### TC-04: Image Integrity Verification
 
-| 检查项 | debian:bookworm-slim | redis:7-alpine | 状态 |
-|--------|---------------------|----------------|------|
-| Image ID 一致性 | d1c8cb627495 | d050212bffac | PASS |
-| 镜像大小合理 | 78.6MB | 41.7MB | PASS |
-| 容器可正常启动 | `cat /etc/debian_version` → `12.13` | `redis-server --version` → `v7.4.7` | PASS |
-| Digest 校验通过 | Docker 自动校验 Checksum | Docker 自动校验 Checksum | PASS |
+| Check | debian:bookworm-slim | redis:7-alpine | Status |
+|-------|---------------------|----------------|--------|
+| Image ID consistency | d1c8cb627495 | d050212bffac | PASS |
+| Image size reasonable | 78.6MB | 41.7MB | PASS |
+| Container starts normally | `cat /etc/debian_version` → `12.13` | `redis-server --version` → `v7.4.7` | PASS |
+| Digest checksum verified | Docker auto-verifies checksum | Docker auto-verifies checksum | PASS |
 
-## 5. VM 103 最终状态
+## 5. VM 103 Final State
 
 ```
 REPOSITORY                   TAG             IMAGE ID       CREATED        SIZE
@@ -149,38 +149,38 @@ REPOSITORY                   TAG             IMAGE ID       CREATED        SIZE
 192.168.1.200:15000/redis    7-alpine        d050212bffac   4 months ago   41.7MB
 ```
 
-## 6. 代码变更
+## 6. Code Changes
 
-本次验证过程中发现并修复了一个关键缺陷：
+One critical defect was found and fixed during this validation:
 
-**问题**: `pkg/oci/docker.go` 中 `GetBlob` 仅返回 image config blob，无法提供 layer 数据；`GetManifest` 返回 image config 而非 OCI distribution manifest。
+**Issue**: In `pkg/oci/docker.go`, `GetBlob` only returned image config blob, unable to serve layer data; `GetManifest` returned image config instead of OCI distribution manifest.
 
-**修复** (commit `ba2469e`):
-- 从 overlay2 diff 目录生成 tar blob 并计算 digest
-- 构建符合 OCI Distribution Spec 的 manifest (schemaVersion 2)
-- 重写 image config 的 `diff_ids` 字段匹配生成的 tar digest
-- 新增 `rewrittenConfigs` 内存存储服务重写后的 config blob
+**Fix** (commit `ba2469e`):
+- Generate tar blob from overlay2 diff directory and compute digest
+- Build OCI Distribution Spec compliant manifest (schemaVersion 2)
+- Rewrite image config `diff_ids` field to match generated tar digest
+- Add `rewrittenConfigs` in-memory store to serve rewritten config blob
 
-**影响**: +341 行 / -29 行，仅修改 `pkg/oci/docker.go`
+**Impact**: +341 lines / -29 lines, only modifies `pkg/oci/docker.go`
 
-## 7. 已知限制
+## 7. Known Limitations
 
-| 限制 | 影响 | 优先级 |
-|------|------|--------|
-| Init 阶段 tar 计算耗时 ~80s (100 layers) | 启动慢，建议改为懒加载 | Medium |
-| 仅支持 HTTP insecure registry 模式 | 需配置 Docker `insecure-registries` | Medium |
-| HTTPS MITM 未连接 | 无法透明拦截 Docker Hub HTTPS 请求 | Low (Phase 3) |
-| Layer tar 与原始 tar 元数据不同 | 需重写 config diff_ids，镜像 digest 与上游不一致 | Low |
+| Limitation | Impact | Priority |
+|-----------|--------|---------|
+| Init phase tar computation ~80s (100 layers) | Slow startup, recommend lazy loading | Medium |
+| HTTP insecure registry mode only | Requires Docker `insecure-registries` configuration | Medium |
+| HTTPS MITM not connected | Cannot transparently intercept Docker Hub HTTPS requests | Low (Phase 3) |
+| Layer tar differs from original tar metadata | Requires rewriting config diff_ids, image digest differs from upstream | Low |
 
-## 8. 结论
+## 8. Conclusion
 
-**测试通过**。OutpostImage 成功实现了节点间的容器镜像共享：
+**Tests passed.** OutpostImage successfully achieved node-to-node container image sharing:
 
-- VM 103 的 Docker 能够从 T480 的 OutpostImage registry 拉取完整的容器镜像
-- 单层镜像 (debian) 和多层镜像 (redis, 8 layers) 均通过验证
-- 拉取的镜像可以正常启动容器并执行命令
-- Docker 的 Checksum 校验全部通过，镜像完整性有保障
+- Docker on VM 103 can pull complete container images from OutpostImage registry on T480
+- Both single-layer images (debian) and multi-layer images (redis, 8 layers) verified
+- Pulled images can start containers and execute commands normally
+- Docker checksum verification all passed, image integrity guaranteed
 
 ---
 
-*报告生成: 2026-03-30 | OutpostImage v0.1.0 | Commit ba2469e*
+*Report generated: 2026-03-30 | OutpostImage v0.1.0 | Commit ba2469e*

@@ -1,40 +1,40 @@
-# OutpostImage 价值主张验证测试报告
+# OutpostImage Value Propositions Validation Test Report
 
-**日期**: 2026-03-30
-**版本**: v0.1.0 (完整 Docker/containerd 组合矩阵测试)
-**测试执行**: CEO Agent
-**任务**: [OUT-26](/OUT/issues/OUT-26)
-**关联**: [OUT-3](/OUT/issues/OUT-3)
-
----
-
-## 修订说明
-
-第四版报告。在完成初步测试和 bug 修复后，本版执行完整的 Docker/containerd Store × Consumer 组合矩阵测试（5 种组合），验证所有 store 模式与消费端的兼容性。
-
-### 代码修复
-
-| Bug ID | 文件 | 修复内容 |
-|--------|------|---------|
-| BUG-VP1-01 | `pkg/proxy/router.go` | `/v2/` 版本检查请求本地响应，不再转发 upstream |
-| BUG-VP1-02 | `pkg/oci/docker.go` | `Resolve()` 添加 `library/` 前缀归一化和多变体查找 |
-| BUG-VP2-01 | `pkg/proxy/router.go` + `pkg/registry/oci.go` | 通过 `X-Original-Registry` 头传递原始 registry 主机名 |
-| BUG-VP3-01 | `pkg/registry/oci.go` | `Docker-Content-Digest` 返回 manifest 内容哈希而非 config digest；增加 manifest content digest 缓存，支持 containerd 的 digest 回查验证 |
-| BUG-VP3-02 | `pkg/oci/containerd.go` | BoltDB 元数据读取：复制 DB 文件避免 containerd daemon 锁争用；修正 target 从 sub-bucket 读取而非 JSON value |
-| BUG-VP3-03 | `pkg/oci/containerd.go` | `Resolve()` 添加 `docker.io/library/` 前缀变体查找，匹配 containerd 的规范引用格式 |
+**Date**: 2026-03-30
+**Version**: v0.1.0 (Full Docker/containerd combination matrix test)
+**Test Executor**: CEO Agent
+**Task**: [OUT-26](/OUT/issues/OUT-26)
+**Related**: [OUT-3](/OUT/issues/OUT-3)
 
 ---
 
-## 测试环境
+## Revision Notes
 
-| 节点 | IP | 角色 | OS | Docker | containerd |
-|------|-----|------|-----|--------|------------|
-| VM 102 | 192.168.1.102 | 镜像源 + OutpostImage 服务端 | Ubuntu 20.04 | 26.1.3 | 1.7.2 |
-| VM 103 | 192.168.1.103 | 镜像消费者 | Ubuntu 20.04 | 26.1.3 | 1.7.2 |
+Fourth revision. After completing initial testing and bug fixes, this version executes the full Docker/containerd Store × Consumer combination matrix (5 combinations), verifying compatibility across all store modes and consumers.
 
-**OutpostImage 配置**: Registry `:15000`, Proxy `:13128`, Metrics `:19090`
+### Code Fixes
 
-**VM 102 预置镜像**:
+| Bug ID | File | Fix |
+|--------|------|-----|
+| BUG-VP1-01 | `pkg/proxy/router.go` | `/v2/` version check served locally, no longer forwarded upstream |
+| BUG-VP1-02 | `pkg/oci/docker.go` | `Resolve()` adds `library/` prefix normalization and multi-variant lookup |
+| BUG-VP2-01 | `pkg/proxy/router.go` + `pkg/registry/oci.go` | Pass original registry hostname via `X-Original-Registry` header |
+| BUG-VP3-01 | `pkg/registry/oci.go` | `Docker-Content-Digest` returns manifest content hash instead of config digest; adds manifest content digest cache to support containerd's digest re-verification |
+| BUG-VP3-02 | `pkg/oci/containerd.go` | BoltDB metadata read: copy DB file to avoid containerd daemon lock contention; read target from sub-bucket instead of JSON value |
+| BUG-VP3-03 | `pkg/oci/containerd.go` | `Resolve()` adds `docker.io/library/` prefix variant lookup to match containerd's canonical reference format |
+
+---
+
+## Test Environment
+
+| Node | IP | Role | OS | Docker | containerd |
+|------|----|------|----|--------|------------|
+| VM 102 | 192.168.1.102 | Image source + OutpostImage server | Ubuntu 20.04 | 26.1.3 | 1.7.2 |
+| VM 103 | 192.168.1.103 | Image consumer | Ubuntu 20.04 | 26.1.3 | 1.7.2 |
+
+**OutpostImage Configuration**: Registry `:15000`, Proxy `:13128`, Metrics `:19090`
+
+**VM 102 Pre-loaded Images**:
 - `debian:bookworm-slim` (docker.io)
 - `redis:7-alpine` (docker.io)
 - `ghcr.io/test/debian:bookworm-slim`
@@ -42,43 +42,43 @@
 
 ---
 
-## 测试结果汇总
+## Test Results Summary
 
-| 价值主张 | 状态 | Docker 维度 | containerd 维度 | 说明 |
-|---------|------|-------------|-----------------|------|
-| VP-1：零接入成本 | **PASS** | PASS | N/A (消费端测试) | HTTPS MITM 代理全部本地响应，无 upstream 流量 |
-| VP-2：多镜像源透明覆盖 | **PASS** | PASS | N/A (消费端测试) | docker.io + ghcr.io + registry.example.com 三个源全部通过 |
-| VP-3：双运行时支持 | **PASS** | PASS | PASS | 5/5 组合矩阵全通过 (详见完整矩阵) |
-| VP-4：最小依赖 | **PASS** | — | — | 7 直接 / 56 总依赖, 11MB 静态二进制 |
-| VP-5：离线优先 | **PASS** | PASS | N/A (离线场景) | 完全断网，VM 102→VM 103 镜像共享正常，容器验证通过 |
+| Value Proposition | Status | Docker | containerd | Notes |
+|-------------------|--------|--------|------------|-------|
+| VP-1: Zero onboarding cost | **PASS** | PASS | N/A (consumer-side test) | All requests served locally via HTTPS MITM proxy, zero upstream traffic |
+| VP-2: Multi-registry transparent coverage | **PASS** | PASS | N/A (consumer-side test) | docker.io + ghcr.io + registry.example.com all passed |
+| VP-3: Dual runtime support | **PASS** | PASS | PASS | 5/5 combination matrix all passed (see full matrix) |
+| VP-4: Minimal dependencies | **PASS** | — | — | 7 direct / 56 total dependencies, 11MB static binary |
+| VP-5: Offline-first | **PASS** | PASS | N/A (offline scenario) | Fully air-gapped, VM 102→VM 103 image sharing works, container verified |
 
-**总计: 5 PASS / 0 FAIL**
+**Total: 5 PASS / 0 FAIL**
 
 ---
 
-## VP-1：零接入成本
+## VP-1: Zero Onboarding Cost
 
-**验证目标**: 仅通过设置 `HTTP_PROXY` 环境变量即可启用镜像共享，无需修改 Docker daemon.json 或 containerd 配置文件。
+**Objective**: Enable image sharing by setting only the `HTTP_PROXY` environment variable, without modifying Docker daemon.json or containerd config files.
 
-### 测试步骤
+### Test Steps
 
-1. **清除 VM 103 所有镜像**: `docker image prune -af`
-2. **确认 VM 103 无 registry mirror 配置**: `daemon.json` 中仅有 `insecure-registries`
-3. **配置 Docker HTTP_PROXY**:
+1. **Clear all images on VM 103**: `docker image prune -af`
+2. **Confirm no registry mirror config on VM 103**: `daemon.json` contains only `insecure-registries`
+3. **Configure Docker HTTP_PROXY**:
    ```
    # /etc/systemd/system/docker.service.d/proxy.conf
    [Service]
    Environment="HTTP_PROXY=http://192.168.1.102:13128"
    Environment="HTTPS_PROXY=http://192.168.1.102:13128"
    ```
-4. **重启 Docker**: `systemctl daemon-reload && systemctl restart docker`
-5. **拉取镜像**:
+4. **Restart Docker**: `systemctl daemon-reload && systemctl restart docker`
+5. **Pull images**:
    ```bash
-   docker pull redis:7-alpine        # 成功
-   docker pull debian:bookworm-slim   # 成功
+   docker pull redis:7-alpine        # success
+   docker pull debian:bookworm-slim   # success
    ```
 
-### 日志证据
+### Log Evidence
 
 ```
 v2 version check served locally  source=local  path=/v2/
@@ -86,38 +86,38 @@ manifest served from local       source=local  path=/v2/library/redis/manifests/
 manifest served from local       source=local  path=/v2/library/redis/manifests/sha256:d050...
 routing blob to local (direct)   source=local  path=/v2/library/redis/blobs/sha256:34c35a...
 routing blob to local (direct)   source=local  path=/v2/library/redis/blobs/sha256:08f6ae...
-... (全部 8 层 + config blob 均从本地提供)
+... (all 8 layers + config blob served locally)
 manifest served from local       source=local  path=/v2/library/debian/manifests/bookworm-slim
 routing blob to local (tracker)  source=local  path=/v2/library/debian/blobs/sha256:d1c8cb...
 routing blob to local (direct)   source=local  path=/v2/library/debian/blobs/sha256:5712eb...
 ```
 
-- `/v2/` 版本检查: 本地响应 (修复 BUG-VP1-01)
-- manifest 解析: `library/redis:7-alpine` → 本地 store `redis:7-alpine` (修复 BUG-VP1-02)
-- 零 upstream 流量
+- `/v2/` version check: served locally (fixes BUG-VP1-01)
+- Manifest resolution: `library/redis:7-alpine` → local store `redis:7-alpine` (fixes BUG-VP1-02)
+- Zero upstream traffic
 
-### 判定: **PASS**
+### Verdict: **PASS**
 
 ---
 
-## VP-2：多镜像源透明覆盖
+## VP-2: Multi-Registry Transparent Coverage
 
-**验证目标**: 在不修改任何配置的情况下，OutpostImage 能拦截并加速来自不同 registry 的镜像拉取。
+**Objective**: Without modifying any configuration, OutpostImage can intercept and accelerate image pulls from different registries.
 
-### 测试步骤
+### Test Steps
 
-1. **清除 VM 103 所有镜像**
-2. **依次拉取三个不同 registry 的镜像**:
+1. **Clear all images on VM 103**
+2. **Pull images from three different registries sequentially**:
    ```bash
-   docker pull ghcr.io/test/debian:bookworm-slim              # ghcr.io — 成功
-   docker pull registry.example.com/test/redis:7-alpine        # custom registry — 成功
-   docker pull redis:7-alpine                                  # docker.io — 成功 (共享层已缓存)
+   docker pull ghcr.io/test/debian:bookworm-slim              # ghcr.io — success
+   docker pull registry.example.com/test/redis:7-alpine        # custom registry — success
+   docker pull redis:7-alpine                                  # docker.io — success (layers already cached)
    ```
 
-### 日志证据
+### Log Evidence
 
 ```
-MITM 拦截统计:
+MITM intercept stats:
   3 host=ghcr.io
  12 host=registry.example.com
   3 host=registry-1.docker.io
@@ -127,7 +127,7 @@ manifest served from local  path=/v2/test/redis/manifests/7-alpine            (r
 manifest served from local  path=/v2/library/redis/manifests/7-alpine         (docker.io)
 ```
 
-### VM 103 最终镜像列表
+### VM 103 Final Image List
 
 ```
 REPOSITORY                        TAG             IMAGE ID       SIZE
@@ -136,29 +136,29 @@ redis                             7-alpine        e053f0daf05a   41.7MB
 registry.example.com/test/redis   7-alpine        e053f0daf05a   41.7MB
 ```
 
-- 3 个不同 registry 来源的镜像全部成功拉取
-- 无需为每个 registry 做额外配置
-- `X-Original-Registry` 头正确传递原始 registry 主机名用于标签匹配
+- Images from 3 different registry sources all pulled successfully
+- No additional configuration required per registry
+- `X-Original-Registry` header correctly passes original registry hostname for tag matching
 
-### 判定: **PASS**
+### Verdict: **PASS**
 
 ---
 
-## VP-3：Docker + containerd 双运行时支持
+## VP-3: Docker + containerd Dual Runtime Support
 
-**验证目标**: OutpostImage 能同时读取 Docker 和 containerd 的本地存储并向不同消费端提供镜像。
+**Objective**: OutpostImage can simultaneously read from Docker and containerd local stores and serve images to different consumers.
 
-### 完整组合矩阵
+### Full Combination Matrix
 
-| # | Store 模式 | 消费端 | 测试镜像 | 结果 | 说明 |
-|---|-----------|--------|---------|------|------|
-| 1 | docker | Docker (curl/docker pull) | redis:7-alpine | **PASS** | manifest 200, library/ 前缀归一化正常 |
-| 2 | docker | containerd (ctr pull) | redis:7-alpine | **PASS** | 40.6 MiB 全部 layer 下载, unpack 成功 |
-| 3 | containerd | Docker (curl) | debian:bookworm-slim | **PASS** | OCI manifest 正确返回, blob 可访问 |
-| 4 | auto (MultiStore) | Docker (curl) | redis:7-alpine | **PASS** | Docker store 中的镜像正确提供 |
-| 5 | auto (MultiStore) | containerd (ctr pull) | debian:bookworm-slim | **PASS** | containerd store 中的镜像拉取+解压成功 |
+| # | Store Mode | Consumer | Test Image | Result | Notes |
+|---|-----------|---------|-----------|--------|-------|
+| 1 | docker | Docker (curl/docker pull) | redis:7-alpine | **PASS** | manifest 200, library/ prefix normalization works |
+| 2 | docker | containerd (ctr pull) | redis:7-alpine | **PASS** | 40.6 MiB all layers downloaded, unpack successful |
+| 3 | containerd | Docker (curl) | debian:bookworm-slim | **PASS** | OCI manifest returned correctly, blob accessible |
+| 4 | auto (MultiStore) | Docker (curl) | redis:7-alpine | **PASS** | Image from Docker store served correctly |
+| 5 | auto (MultiStore) | containerd (ctr pull) | debian:bookworm-slim | **PASS** | Image from containerd store pulled and extracted successfully |
 
-**5/5 组合全部通过。**
+**5/5 combinations all passed.**
 
 ### Test 1: docker store → Docker consumer
 
@@ -183,7 +183,7 @@ unpacking linux/amd64 sha256:b83d46a...
 done: 1.25s
 ```
 
-关键修复：containerd 会先按 tag 获取 manifest，然后用返回的 `Docker-Content-Digest` 重新获取验证。添加了 manifest content digest 缓存来支持这一行为。
+Key fix: containerd first fetches manifest by tag, then re-fetches by the `Docker-Content-Digest` returned for verification. Added manifest content digest cache to support this behavior.
 
 ### Test 3: containerd store → Docker consumer
 
@@ -195,10 +195,10 @@ Docker-Content-Digest: sha256:74cbd6d...
 Config blob (sha256:d1c8cb...) accessible: HTTP 200
 ```
 
-关键修复：
-- BoltDB 复制到临时文件避免 containerd daemon 锁争用
-- target 字段从 sub-bucket 读取 (digest, mediatype, size) 而非 JSON value
-- Resolve() 添加 docker.io/library/ 前缀变体查找
+Key fixes:
+- Copy BoltDB to temp file to avoid containerd daemon lock contention
+- Read target fields from sub-bucket (digest, mediatype, size) instead of JSON value
+- `Resolve()` adds `docker.io/library/` prefix variant lookup
 
 ### Test 4 & 5: auto MultiStore
 
@@ -208,77 +208,77 @@ containerd store initialized images=22  tags=64  blobs=152
 multiple stores detected, using MultiStore  count=2
 ```
 
-- Test 4: redis:7-alpine (来自 Docker store) → Docker consumer: HTTP 200
-- Test 5: debian:bookworm-slim (来自 containerd store) → ctr pull 成功, 77.9 MiB, unpack 完成
+- Test 4: redis:7-alpine (from Docker store) → Docker consumer: HTTP 200
+- Test 5: debian:bookworm-slim (from containerd store) → ctr pull successful, 77.9 MiB, unpack complete
 
-### 判定: **PASS** (全部 5 种 Store×Consumer 组合通过)
+### Verdict: **PASS** (All 5 Store×Consumer combinations passed)
 
 ---
 
-## VP-4：最小依赖
+## VP-4: Minimal Dependencies
 
-**验证目标**: 量化 OutpostImage 的依赖规模，与 Spegel 对比。
+**Objective**: Quantify OutpostImage's dependency footprint and compare with Spegel.
 
-### 测试结果
+### Test Results
 
-| 指标 | OutpostImage | Spegel (参考) | 差异 |
-|------|-------------|--------------|------|
-| 直接依赖 | **7** | ~22 | -68% |
-| 总依赖（含间接） | **56** | ~130 | -57% |
-| 二进制大小 | **11 MB** | ~35-40 MB | -72% |
-| 动态链接 | **无** (静态) | — | — |
+| Metric | OutpostImage | Spegel (reference) | Difference |
+|--------|-------------|-------------------|-----------|
+| Direct dependencies | **7** | ~22 | -68% |
+| Total dependencies (incl. indirect) | **56** | ~130 | -57% |
+| Binary size | **11 MB** | ~35-40 MB | -72% |
+| Dynamic linking | **None** (static) | — | — |
 
-### 直接依赖列表
+### Direct Dependency List
 
 ```
-github.com/alexflint/go-arg       v1.6.1   — CLI 参数解析
-github.com/fsnotify/fsnotify       v1.9.0   — 文件变更监听
-github.com/hashicorp/mdns          v1.0.6   — mDNS 节点发现
-github.com/opencontainers/go-digest v1.0.0  — OCI digest 处理
-github.com/prometheus/client_golang v1.23.2 — Prometheus 指标
-go.etcd.io/bbolt                   v1.4.3   — containerd 元数据读取
-golang.org/x/sync                  v0.19.0  — 并发原语
+github.com/alexflint/go-arg       v1.6.1   — CLI argument parsing
+github.com/fsnotify/fsnotify       v1.9.0   — File change watching
+github.com/hashicorp/mdns          v1.0.6   — mDNS peer discovery
+github.com/opencontainers/go-digest v1.0.0  — OCI digest handling
+github.com/prometheus/client_golang v1.23.2 — Prometheus metrics
+go.etcd.io/bbolt                   v1.4.3   — containerd metadata reading
+golang.org/x/sync                  v0.19.0  — Concurrency primitives
 ```
 
-### 静态链接验证
+### Static Linking Verification
 
 ```bash
 $ ldd outpostimage
         not a dynamic executable
 ```
 
-### 判定: **PASS**
+### Verdict: **PASS**
 
-- 直接依赖 < 10 个 ✓
-- 总依赖 < Spegel 一半 ✓
-- 二进制为静态链接 ✓
-- 二进制大小 < 20MB ✓
+- Direct dependencies < 10 ✓
+- Total dependencies < half of Spegel ✓
+- Binary is statically linked ✓
+- Binary size < 20MB ✓
 
 ---
 
-## VP-5：离线优先
+## VP-5: Offline-First
 
-**验证目标**: 在完全断网的情况下，OutpostImage 仍能正常工作（节点间镜像共享不依赖外部 registry）。
+**Objective**: OutpostImage operates normally in a fully air-gapped environment (node-to-node image sharing does not require external registry access).
 
-### 测试步骤
+### Test Steps
 
-1. **确认 VM 102 有测试镜像**: debian:bookworm-slim, redis:7-alpine
-2. **清除 VM 103 所有镜像**
-3. **断开两台机器外网**:
+1. **Confirm VM 102 has test images**: debian:bookworm-slim, redis:7-alpine
+2. **Clear all images on VM 103**
+3. **Disconnect both machines from external network**:
    ```bash
-   # 两台机器上执行
+   # Execute on both machines
    iptables -I OUTPUT -d 192.168.1.0/24 -j ACCEPT
    iptables -I OUTPUT -d 127.0.0.0/8 -j ACCEPT
    iptables -A OUTPUT -j DROP
    ```
-4. **验证外网不可达**: `curl --connect-timeout 3 https://registry-1.docker.io/v2/` → 超时
-5. **验证内网互通**: `ping 192.168.1.103` → OK
-6. **拉取镜像**:
+4. **Verify external network unreachable**: `curl --connect-timeout 3 https://registry-1.docker.io/v2/` → timeout
+5. **Verify internal network reachable**: `ping 192.168.1.103` → OK
+6. **Pull images**:
    ```bash
-   docker pull 192.168.1.102:15000/library/redis:7-alpine          # 成功
-   docker pull 192.168.1.102:15000/library/debian:bookworm-slim     # 成功
+   docker pull 192.168.1.102:15000/library/redis:7-alpine          # success
+   docker pull 192.168.1.102:15000/library/debian:bookworm-slim     # success
    ```
-7. **验证容器运行**:
+7. **Verify containers run**:
    ```bash
    $ docker run --rm 192.168.1.102:15000/library/redis:7-alpine redis-server --version
    Redis server v=7.4.7 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=31a84af2bcf7caf1
@@ -288,52 +288,52 @@ $ ldd outpostimage
    NAME="Debian GNU/Linux"
    VERSION_ID="12"
    ```
-8. **检查 OutpostImage 日志**: 0 个 upstream 引用
-9. **恢复网络**: `iptables -D OUTPUT -j DROP`
+8. **Check OutpostImage logs**: 0 upstream references
+9. **Restore network**: `iptables -D OUTPUT -j DROP`
 
-### 判定: **PASS**
+### Verdict: **PASS**
 
-- 两台机器均无外网 ✓
-- 镜像成功从 VM 102 拉取到 VM 103 ✓
-- 容器成功运行 ✓
-- OutpostImage 日志中无上游 registry 回退 ✓
-
----
-
-## 总结
-
-5 项核心价值主张全部验证通过。本轮测试共修复 6 个 bug，完成 5 种 Store×Consumer 组合矩阵测试：
-
-1. **VP-1 零接入成本**: HTTPS MITM 代理模式下，全部请求本地响应，无 upstream 流量
-2. **VP-2 多镜像源**: docker.io + ghcr.io + registry.example.com 三个源全部透明拦截
-3. **VP-3 双运行时**: Docker/containerd/auto 三种 store 模式 × Docker/containerd 两种消费端 = 5 种组合全部通过
-4. **VP-4 最小依赖**: 7 直接依赖 / 56 总依赖 / 11MB 静态二进制
-5. **VP-5 离线优先**: 完全断网环境下镜像共享和容器运行均正常
-
-### 关键技术修复
-
-| 问题 | 根因 | 修复 |
-|------|------|------|
-| containerd 拉取 manifest 失败 | `Docker-Content-Digest` 返回 config digest 而非 content hash | 计算 `digest.FromBytes(data)` + content digest 缓存 |
-| containerd store tag 解析为空 | BoltDB 被 daemon 锁定 + target 是 sub-bucket 非 JSON | 复制 DB 到临时文件 + 从 sub-bucket 读取 |
-| containerd 引用格式不匹配 | containerd 用 `docker.io/library/redis:7-alpine` 而非 `redis:7-alpine` | Resolve() 多变体查找 |
+- Both machines had no external network access ✓
+- Images successfully pulled from VM 102 to VM 103 ✓
+- Containers ran successfully ✓
+- No upstream registry fallback in OutpostImage logs ✓
 
 ---
 
-## VP-6 性能测试：大模型镜像共享（模拟边缘 AI 模型分发）
+## Summary
 
-**日期**: 2026-03-30
-**测试执行**: OI-Review Agent
-**任务**: [OUT-28](/OUT/issues/OUT-28)
+All 5 core value propositions validated. This round of testing fixed 6 bugs and completed a 5-combination Store×Consumer matrix test:
 
-### 测试环境
+1. **VP-1 Zero Onboarding Cost**: All requests served locally via HTTPS MITM proxy, zero upstream traffic
+2. **VP-2 Multi-Registry**: docker.io + ghcr.io + registry.example.com all transparently intercepted
+3. **VP-3 Dual Runtime**: Docker/containerd/auto three store modes × Docker/containerd two consumers = 5 combinations all passed
+4. **VP-4 Minimal Dependencies**: 7 direct / 56 total dependencies / 11MB static binary
+5. **VP-5 Offline-First**: Image sharing and container execution both work normally in fully air-gapped environment
 
-| 节点 | IP | 角色 | 硬件 |
-|------|-----|------|------|
-| **VM 102** | **192.168.1.102** | 镜像源 + OutpostImage 服务端 | QEMU vCPU×1, RAM 2GB |
-| **VM 103** | **192.168.1.103** | 镜像消费者 | QEMU vCPU×1, RAM 2GB |
+### Key Technical Fixes
 
-### OutpostImage 配置
+| Issue | Root Cause | Fix |
+|-------|-----------|-----|
+| containerd manifest pull failure | `Docker-Content-Digest` returned config digest instead of content hash | Compute `digest.FromBytes(data)` + content digest cache |
+| containerd store tag resolves empty | BoltDB locked by daemon + target is sub-bucket not JSON | Copy DB to temp file + read from sub-bucket |
+| containerd reference format mismatch | containerd uses `docker.io/library/redis:7-alpine` not `redis:7-alpine` | `Resolve()` multi-variant lookup |
+
+---
+
+## VP-6 Performance Test: Large AI Model Image Sharing (Simulating Edge AI Model Distribution)
+
+**Date**: 2026-03-30
+**Test Executor**: OI-Review Agent
+**Task**: [OUT-28](/OUT/issues/OUT-28)
+
+### Test Environment
+
+| Node | IP | Role | Hardware |
+|------|----|------|---------|
+| **VM 102** | **192.168.1.102** | Image source + OutpostImage server | QEMU vCPU×1, RAM 2GB |
+| **VM 103** | **192.168.1.103** | Image consumer | QEMU vCPU×1, RAM 2GB |
+
+### OutpostImage Configuration
 
 **VM 102** (`store-type=docker`, `peers=192.168.1.103:15000`):
 ```bash
@@ -361,69 +361,69 @@ $ ldd outpostimage
   --ca-dir=/etc/outpostimage
 ```
 
-### 测试镜像
+### Test Images
 
-| 镜像 | 大小 | 镜像 ID | 模拟场景 |
-|------|------|---------|----------|
-| `model-test:500m` | 603 MB | `1ea9015dd591` | 小型 AI 模型（ONNX/TFLite 推理模型） |
-| `model-test:2g` | 2.23 GB | `472c24d80a15` | 中型 AI 模型（量化 LLM/Stable Diffusion） |
+| Image | Size | Image ID | Simulated Scenario |
+|-------|------|---------|-------------------|
+| `model-test:500m` | 603 MB | `1ea9015dd591` | Small AI model (ONNX/TFLite inference model) |
+| `model-test:2g` | 2.23 GB | `472c24d80a15` | Medium AI model (quantized LLM/Stable Diffusion) |
 
-VM 103 insecure-registry 配置: `{"insecure-registries": ["192.168.1.102:15000", "192.168.1.103:15000"]}`
+VM 103 insecure-registry config: `{"insecure-registries": ["192.168.1.102:15000", "192.168.1.103:15000"]}`
 
 ---
 
-### 测试 5（基准）：网络带宽测量
+### Test 5 (Baseline): Network Bandwidth Measurement
 
-**目的**: 建立原始网络带宽基准，用于计算协议开销。
+**Purpose**: Establish raw network bandwidth baseline for protocol overhead calculation.
 
-#### iperf3 原始 TCP 带宽
+#### iperf3 Raw TCP Bandwidth
 
 ```bash
-# VM 102 启动 iperf3 服务端
+# VM 102 start iperf3 server
 pkill iperf3; iperf3 -s -D -p 5201
 
-# VM 103 运行客户端（10 秒）
+# VM 103 run client (10 seconds)
 iperf3 -c 192.168.1.102 -p 5201 -t 10 -f m
 ```
 
-**输出**:
+**Output**:
 ```
 [ ID] Interval           Transfer     Bitrate         Retr  Cwnd
 [  5]   0.00-10.00  sec  6.26 GBytes  5381 Mbits/sec    4   sender
 [  5]   0.00-10.00  sec  6.26 GBytes  5376 Mbits/sec        receiver
 ```
 
-**结论**: 原始 TCP 带宽 = **5.4 Gbps（675 MB/s）**
+**Conclusion**: Raw TCP bandwidth = **5.4 Gbps (675 MB/s)**
 
-#### SCP 文件传输基准
+#### SCP File Transfer Baseline
 
 ```bash
-# 603MB 文件
+# 603MB file
 time scp root@192.168.1.102:/tmp/baseline_603m.bin /tmp/
 # real 0m17.351s → 34.7 MB/s
 
-# 2284MB 文件
+# 2284MB file
 time scp root@192.168.1.102:/tmp/baseline_2g.bin /tmp/
 # real 1m12.758s → 31.4 MB/s
 ```
 
-**SCP 平均传输速率**: ~33 MB/s（含 SSH 加密开销）
+**SCP Average Transfer Rate**: ~33 MB/s (including SSH encryption overhead)
 
 ---
 
-### 测试 1：500MB 模型镜像传输
+### Test 1: 500MB Model Image Transfer
 
 ```bash
-# VM 103 执行
+# Execute on VM 103
 date '+%Y-%m-%d %H:%M:%S'  # 2026-03-30 11:26:24
 time docker pull 192.168.1.102:15000/model-test:500m
 date '+%Y-%m-%d %H:%M:%S'  # 2026-03-30 11:26:56
 ```
 
-**拉取输出**:
+**Pull output**:
 ```
 500m: Pulling from model-test
-5712ebd750aa: Already exists          ← 基础层（debian bookworm-slim，已缓存）
+5712ebd750aa: Already exists          ← base layer (debian bookworm-slim, already cached)
 4266d08d832f: Pulling fs layer
 4266d08d832f: Verifying Checksum
 4266d08d832f: Download complete
@@ -432,7 +432,7 @@ Digest: sha256:afe1f36579f5955bf7fffce6874f2f71b3d9027c44cd25134bb0fc954f831359
 Status: Downloaded newer image for 192.168.1.102:15000/model-test:500m
 ```
 
-**完整性验证**:
+**Integrity verification**:
 ```bash
 $ docker run --rm 192.168.1.102:15000/model-test:500m cat /model/metadata.json
 {"model": "test-500m", "size": "500MB"}
@@ -441,33 +441,33 @@ $ docker run --rm 192.168.1.102:15000/model-test:500m ls -lh /model/weights.bin
 -rw-r--r-- 1 root root 500M Mar 30 11:15 /model/weights.bin
 ```
 
-**结果**:
+**Results**:
 
-| 指标 | 数值 |
-|------|------|
-| 总耗时 | 32 秒 |
-| 传输速率 | 18.84 MB/s（603 MB / 32 s） |
-| 实际传输层 | `4266d08d832f`（~500 MB，模型数据层） |
-| 跳过层 | `5712ebd750aa`（基础层已缓存） |
-| 完整性 | ✅ PASS |
+| Metric | Value |
+|--------|-------|
+| Total time | 32 seconds |
+| Transfer rate | 18.84 MB/s (603 MB / 32 s) |
+| Actual layer transferred | `4266d08d832f` (~500 MB, model data layer) |
+| Skipped layers | `5712ebd750aa` (base layer already cached) |
+| Integrity | ✅ PASS |
 
-**判定: PASS**
+**Verdict: PASS**
 
 ---
 
-### 测试 2：2GB 模型镜像传输
+### Test 2: 2GB Model Image Transfer
 
 ```bash
-# VM 103 执行
+# Execute on VM 103
 date '+%Y-%m-%d %H:%M:%S'  # 2026-03-30 11:27:34
 time docker pull 192.168.1.102:15000/model-test:2g
 date '+%Y-%m-%d %H:%M:%S'  # 2026-03-30 11:29:58
 ```
 
-**拉取输出**:
+**Pull output**:
 ```
 2g: Pulling from model-test
-5712ebd750aa: Already exists          ← 基础层（已缓存）
+5712ebd750aa: Already exists          ← base layer (already cached)
 93d81e93b396: Pulling fs layer
 93d81e93b396: Verifying Checksum
 93d81e93b396: Download complete
@@ -476,7 +476,7 @@ Digest: sha256:bc174dfc71b1b9dd57ea35e060e0e61c0555ef9895e684d94a92f3a7d490b610
 Status: Downloaded newer image for 192.168.1.102:15000/model-test:2g
 ```
 
-**完整性验证**:
+**Integrity verification**:
 ```bash
 $ docker run --rm 192.168.1.102:15000/model-test:2g cat /model/metadata.json
 {"model": "test-2g", "size": "2GB"}
@@ -486,76 +486,76 @@ $ docker run --rm 192.168.1.102:15000/model-test:2g ls -lh /model/weights-part1.
 -rw-r--r-- 1 root root 1.0G Mar 30 11:15 /model/weights-part2.bin
 ```
 
-**结果**:
+**Results**:
 
-| 指标 | 数值 |
-|------|------|
-| 总耗时 | 144 秒 |
-| 传输速率 | 15.86 MB/s（2284 MB / 144 s） |
-| 实际传输层 | `93d81e93b396`（~2 GB，模型数据层） |
-| 跳过层 | `5712ebd750aa`（基础层已缓存） |
-| 完整性 | ✅ PASS（weights-part1 + weights-part2 = 2GB） |
+| Metric | Value |
+|--------|-------|
+| Total time | 144 seconds |
+| Transfer rate | 15.86 MB/s (2284 MB / 144 s) |
+| Actual layer transferred | `93d81e93b396` (~2 GB, model data layer) |
+| Skipped layers | `5712ebd750aa` (base layer already cached) |
+| Integrity | ✅ PASS (weights-part1 + weights-part2 = 2GB) |
 
-**判定: PASS**
+**Verdict: PASS**
 
 ---
 
-### 测试 3：重复拉取（缓存命中）
+### Test 3: Repeated Pull (Cache Hit)
 
-#### 测试 3a：Docker 层缓存命中
+#### Test 3a: Docker Layer Cache Hit
 
-VM 103 已有 500MB 镜像，再次拉取同一镜像：
+VM 103 already has the 500MB image, pull the same image again:
 
 ```bash
-# VM 103 执行
+# Execute on VM 103
 date '+%Y-%m-%d %H:%M:%S'  # 2026-03-30 11:32:02
 docker pull 192.168.1.102:15000/model-test:500m
 ```
 
-**输出**:
+**Output**:
 ```
 500m: Pulling from model-test
 Digest: sha256:afe1f36579f5955bf7fffce6874f2f71b3d9027c44cd25134bb0fc954f831359
 Status: Image is up to date for 192.168.1.102:15000/model-test:500m
 ```
 
-**耗时**: 123 ms（vs 首次 32 s = **260x 加速**）
+**Duration**: 123 ms (vs. first pull 32 s = **260x speedup**)
 
-#### 测试 3b：P2P 双节点状态
+#### Test 3b: P2P Dual-Node State
 
-VM 103 启动本地 OutpostImage（`peers=192.168.1.102:15000`）后：
+After VM 103 starts local OutpostImage (`peers=192.168.1.102:15000`):
 
 ```
 VM 102 OutpostImage: images=4, tags=7, layers=11
 VM 103 OutpostImage: images=4, tags=5, layers=11, peers=[192.168.1.102:15000]
 ```
 
-两个节点的 state tracker 互相感知，VM 103 能将本地已有的 digests 向 VM 102 通告，实现分布式内容感知路由。
+Both nodes' state trackers are mutually aware. VM 103 can advertise its locally available digests to VM 102, enabling distributed content-aware routing.
 
-**结果**:
+**Results**:
 
-| 场景 | 耗时 |
-|------|------|
-| 首次拉取（无缓存） | 32 s |
-| 重复拉取（Docker 层缓存命中） | 123 ms |
-| 加速比 | 260x |
+| Scenario | Duration |
+|---------|---------|
+| First pull (no cache) | 32 s |
+| Repeated pull (Docker layer cache hit) | 123 ms |
+| Speedup | 260x |
 
-**判定: PASS**
+**Verdict: PASS**
 
 ---
 
-### 测试 4：并行拉取
+### Test 4: Parallel Pull
 
-同时拉取 500MB 和 2GB 镜像（先清除 VM 103 本地镜像）：
+Pull 500MB and 2GB images simultaneously (after clearing VM 103 local images):
 
 ```bash
-# VM 103 执行（先清除 model-test 镜像）
+# Execute on VM 103 (clear model-test images first)
 docker pull 192.168.1.102:15000/model-test:500m &
 docker pull 192.168.1.102:15000/model-test:2g &
 wait
 ```
 
-**拉取日志**:
+**Pull logs**:
 ```
 [500m] 5712ebd750aa: Already exists
 [500m] 4266d08d832f: Downloading ...  →  Pull complete
@@ -563,50 +563,50 @@ wait
 [2g]   93d81e93b396: Downloading ...  →  Pull complete
 ```
 
-**结果**:
+**Results**:
 
-| 指标 | 串行（预估） | 并行（实测） | 改善 |
-|------|------------|------------|------|
-| 500MB 完成时间 | 32 s | 46 s | 共享带宽，单个变慢 |
-| 2GB 完成时间 | 144 s | 129 s | 与 500MB 并发 |
-| 总耗时 | 176 s（32+144） | 129 s | **26.7% 节省** |
-| 并行效率 | — | 136% | 176s/129s |
+| Metric | Serial (estimated) | Parallel (measured) | Improvement |
+|--------|-------------------|--------------------|----|
+| 500MB completion time | 32 s | 46 s | Shared bandwidth, individual slower |
+| 2GB completion time | 144 s | 129 s | Concurrent with 500MB |
+| Total time | 176 s (32+144) | 129 s | **26.7% savings** |
+| Parallel efficiency | — | 136% | 176s/129s |
 
-**分析**: 两路并行拉取共享出口带宽，总时间受最大任务（2GB）主导。并行效率 136% 说明两个任务的带宽使用有一定重叠，整体吞吐提升。
+**Analysis**: Two parallel pulls share egress bandwidth; total time dominated by the largest task (2GB). Parallel efficiency of 136% indicates some bandwidth overlap between the two tasks, improving overall throughput.
 
-**判定: PASS**
-
----
-
-### 综合性能指标
-
-| 指标 | 500MB 镜像 | 2GB 镜像 |
-|------|-----------|---------|
-| 传输速率 (MB/s) | 18.84 | 15.86 |
-| 网络利用率 (%) | 2.8% (18.84/675) | 2.3% (15.86/675) |
-| SCP 基准速率 (MB/s) | 34.7 | 31.4 |
-| 协议开销 vs SCP (%) | 45.7% | 49.5% |
-| 缓存命中延迟 | 123 ms | — |
-| 缓存命中加速比 | 260x | — |
-
-**协议开销说明**:
-OutpostImage 当前实现使用**按需流式 tar**（`tarDirectory` + overlay2 diff 目录）提供层数据，不经压缩。主要开销来自 CPU 实时 tar 打包，而非网络带宽。后续可优化为预计算 tar 缓存以提升吞吐。
-
-**VM 102 OutpostImage 资源消耗**（传输峰值）:
-
-| 资源 | 值 |
-|------|-----|
-| CPU | 5.8%（单核 QEMU vCPU） |
-| 内存 | 0.3%（约 6 MB RSS） |
-| 请求总耗时（GET /v2）| 192.96 s（全部 18 次请求累计） |
+**Verdict: PASS**
 
 ---
 
-### 判定：PASS
+### Aggregate Performance Metrics
 
-- 500MB 模型镜像传输: ✅ 18.84 MB/s，完整性验证通过
-- 2GB 模型镜像传输: ✅ 15.86 MB/s，完整性验证通过
-- 缓存命中（重复拉取）: ✅ 123 ms（260x 加速）
-- 并行拉取: ✅ 129s（比串行 176s 节省 26.7%）
-- P2P 双节点感知: ✅ 两节点 state tracker 正常运行，互相感知
-- 大文件传输稳定性: ✅ 无中断、无数据损坏
+| Metric | 500MB Image | 2GB Image |
+|--------|------------|----------|
+| Transfer rate (MB/s) | 18.84 | 15.86 |
+| Network utilization (%) | 2.8% (18.84/675) | 2.3% (15.86/675) |
+| SCP baseline rate (MB/s) | 34.7 | 31.4 |
+| Protocol overhead vs SCP (%) | 45.7% | 49.5% |
+| Cache hit latency | 123 ms | — |
+| Cache hit speedup | 260x | — |
+
+**Protocol Overhead Notes**:
+OutpostImage's current implementation uses **on-demand streaming tar** (`tarDirectory` + overlay2 diff directory) to serve layer data without compression. The main overhead comes from real-time CPU tar packaging, not network bandwidth. Future optimization: pre-computed tar cache to improve throughput.
+
+**VM 102 OutpostImage Resource Usage** (during transfer peak):
+
+| Resource | Value |
+|---------|-------|
+| CPU | 5.8% (single-core QEMU vCPU) |
+| Memory | 0.3% (~6 MB RSS) |
+| Total request duration (GET /v2) | 192.96 s (18 total requests accumulated) |
+
+---
+
+### Verdict: PASS
+
+- 500MB model image transfer: ✅ 18.84 MB/s, integrity verified
+- 2GB model image transfer: ✅ 15.86 MB/s, integrity verified
+- Cache hit (repeated pull): ✅ 123 ms (260x speedup)
+- Parallel pull: ✅ 129s (26.7% savings vs serial 176s)
+- P2P dual-node awareness: ✅ Both nodes' state trackers running normally, mutually aware
+- Large file transfer stability: ✅ No interruptions, no data corruption
