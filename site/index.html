@@ -26,7 +26,7 @@
 <!-- Hero -->
 <section class="hero">
   <div class="container">
-    <div class="hero-badge">&#x1f4e1; v1.0 — Now Available</div>
+    <div class="hero-badge"><span class="badge-dot"></span> v1.0 — Now Available</div>
     <h1>P2P OCI Image Distribution<br />for <span>Edge Computing</span></h1>
     <p class="hero-tagline">
       OutpostImage turns every edge node into a zero-overhead OCI registry by
@@ -44,12 +44,22 @@
         &#11015; Releases
       </a>
     </div>
+    <div class="hero-tags">
+      <span>Docker Native</span>
+      <span class="tag-sep">&middot;</span>
+      <span>Zero Storage Overhead</span>
+      <span class="tag-sep">&middot;</span>
+      <span>P2P Mesh</span>
+      <span class="tag-sep">&middot;</span>
+      <span>Offline First</span>
+    </div>
   </div>
 </section>
 
 <!-- Architecture -->
 <section id="architecture">
   <div class="container">
+    <div class="section-label">ARCHITECTURE</div>
     <h2>Architecture</h2>
     <p class="section-sub">OutpostImage runs as a transparent HTTP proxy on every edge node.</p>
 
@@ -114,6 +124,7 @@
 <!-- How It Works -->
 <section id="how-it-works">
   <div class="container">
+    <div class="section-label">HOW IT WORKS</div>
     <h2>How It Works</h2>
     <p class="section-sub">OutpostImage intercepts image pulls, resolves from peers first, and shares back to the LAN — in three phases.</p>
 
@@ -143,6 +154,7 @@ Edge Node A                         Edge Node B
 <!-- Features -->
 <section id="features">
   <div class="container">
+    <div class="section-label">CAPABILITIES</div>
     <h2>Key Features</h2>
     <p class="section-sub">Built for edge deployments where bandwidth and storage are constrained.</p>
 
@@ -194,6 +206,7 @@ Edge Node A                         Edge Node B
 <!-- Comparison -->
 <section id="comparison">
   <div class="container">
+    <div class="section-label">COMPARISON</div>
     <h2>OutpostImage vs Spegel</h2>
     <p class="section-sub">Both solve P2P image distribution — OutpostImage targets broader runtime compatibility.</p>
 
@@ -246,6 +259,7 @@ Edge Node A                         Edge Node B
 <!-- Test Results -->
 <section id="test-results">
   <div class="container">
+    <div class="section-label">VALIDATION</div>
     <h2>Tested &amp; Validated</h2>
     <p class="section-sub">Real-world validation across Docker and containerd on edge VMs (2026-03-30). All 5 value propositions passed. Full reports in <a href="https://github.com/outpostos/outpostimage/tree/main/docs" target="_blank">docs/</a>.</p>
 
@@ -679,6 +693,7 @@ Redis server v=7.4.7</code></pre>
 <!-- Quick Start -->
 <section id="quickstart">
   <div class="container">
+    <div class="section-label">GETTING STARTED</div>
     <h2>Quick Start</h2>
     <p class="section-sub">Up and running in minutes on any Linux node.</p>
 
@@ -738,16 +753,46 @@ update-ca-certificates</code></pre>
   </div>
 </section>
 
+<!-- CTA -->
+<section class="cta-section">
+  <div class="container">
+    <div class="cta-badge">Open Source &amp; Free Forever</div>
+    <h2>Ready to Distribute Images<br />at <span>Edge Speed</span>?</h2>
+    <p class="cta-sub">Deploy on your edge nodes in minutes. No central registry, no extra storage, no vendor lock-in.</p>
+    <div class="hero-actions">
+      <a href="#quickstart" class="btn btn-primary btn-lg">&#9654; Get Started Now</a>
+      <a href="https://github.com/outpostos/outpostimage" class="btn btn-outline">&#128196; Read the Docs</a>
+    </div>
+    <div class="cta-integrations">
+      <span>Docker</span>
+      <span class="tag-sep">&middot;</span>
+      <span>containerd</span>
+      <span class="tag-sep">&middot;</span>
+      <span>OCI</span>
+      <span class="tag-sep">&middot;</span>
+      <span>Prometheus</span>
+    </div>
+  </div>
+</section>
+
 <!-- Footer -->
 <footer>
   <div class="container">
-    <div class="footer-links">
-      <a href="https://github.com/outpostos/outpostimage">GitHub</a>
-      <a href="https://github.com/outpostos/outpostimage/releases">Releases</a>
-      <a href="https://github.com/outpostos/outpostimage/blob/main/docs/api-reference.md">API Docs</a>
-      <a href="https://github.com/outpostos/outpostimage/blob/main/docs/deployment-guide.md">Deployment Guide</a>
+    <div class="footer-top">
+      <div class="footer-brand">
+        <span class="nav-brand">Outpost<span class="dot">Image</span></span>
+        <p class="footer-tagline">P2P OCI image distribution for edge computing.</p>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/outpostos/outpostimage">GitHub</a>
+        <a href="https://github.com/outpostos/outpostimage/releases">Releases</a>
+        <a href="https://github.com/outpostos/outpostimage/blob/main/docs/api-reference.md">API Docs</a>
+        <a href="https://github.com/outpostos/outpostimage/blob/main/docs/deployment-guide.md">Deployment Guide</a>
+      </div>
     </div>
-    <p>OutpostImage — P2P OCI image distribution for edge computing.</p>
+    <div class="footer-bottom">
+      <p>&copy; 2026 OutpostOS. Open source under Apache-2.0 License.</p>
+    </div>
   </div>
 </footer>
 
