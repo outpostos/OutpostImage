@@ -58,8 +58,8 @@ P2P OCI image distribution proxy for edge computing. OutpostImage turns every ed
 ### Binary
 
 ```bash
-# Download the latest binary
-curl -L https://github.com/outpostos/outpostimage/releases/latest/download/outpostimage-linux-amd64 \
+# Download the latest release binary (v1.0.0+)
+curl -L https://github.com/outpostos/OutpostImage/releases/latest/download/outpostimage-linux-amd64 \
   -o /usr/local/bin/outpostimage && chmod +x /usr/local/bin/outpostimage
 
 # Run with defaults (auto-detects Docker or containerd store)
@@ -77,7 +77,7 @@ docker run -d \
   --network host \
   -v /var/lib/docker:/var/lib/docker:ro \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
-  outpostimage:latest registry
+  ghcr.io/outpostos/outpostimage:latest registry
 ```
 
 ### Docker Compose

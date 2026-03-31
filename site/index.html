@@ -63,60 +63,30 @@
     <h2>Architecture</h2>
     <p class="section-sub">OutpostImage runs as a transparent HTTP proxy on every edge node.</p>
 
-    <div class="arch-wrap">
-      <div class="arch-diagram">
-
-        <!-- OCI Clients -->
-        <div class="arch-node-group">
-          <div class="group-label">Edge Node</div>
-          <div class="arch-row">
-            <div class="arch-box dim">containerd</div>
-            <div class="arch-box dim">dockerd</div>
-            <div class="arch-box dim">any OCI client</div>
-          </div>
-          <div style="text-align:center; margin: 8px 0; color: var(--text-muted); font-size: 0.75rem; font-family: var(--font-mono);">
-            HTTP_PROXY=http://localhost:3128
-          </div>
-
-          <!-- Arrow down to proxy -->
-          <div class="arch-arrow">
-            <div class="line"></div>
-            &#8595;
-          </div>
-
-          <!-- Proxy -->
-          <div class="arch-row" style="margin-bottom: 16px;">
-            <div class="arch-box accent">OutpostImage HTTP Proxy &nbsp;:3128</div>
-          </div>
-
-          <!-- Split: Local Store + P2P Peers -->
-          <div class="arch-split">
-            <div class="arch-branch">
-              <div class="arch-arrow"><div class="line"></div>&#8595;</div>
-              <div class="arch-box green">Local Store<br /><span style="font-size:0.75em">(Docker / containerd)</span></div>
-            </div>
-            <div class="arch-branch">
-              <div class="arch-arrow"><div class="line"></div>&#8595;</div>
-              <div class="arch-box green">P2P Peers<br /><span style="font-size:0.75em">:5000 registry API</span></div>
-              <div class="arch-label">other edge nodes</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Cache miss arrow -->
-        <div class="arch-arrow">
-          <div class="line"></div>
-          <span style="font-size:0.75rem; color: var(--orange);">cache miss</span>
-          <div class="line"></div>
-          &#8595;
-        </div>
-
-        <!-- Upstream -->
-        <div class="arch-upstream">
-          &#127760; Upstream Registry<br />(internet)
-        </div>
-
-      </div>
+    <div class="diagram">
+┌──────────────────────────────────────────────────────────────────────┐
+│  Edge Node                                                           │
+│                                                                      │
+│   containerd / dockerd / any OCI client                              │
+│          │  HTTP_PROXY=http://localhost:3128                         │
+│          ▼                                                           │
+│   ┌─────────────────────────────────────┐                           │
+│   │   OutpostImage HTTP Proxy  :3128    │                           │
+│   └──────────────┬──────────────────────┘                           │
+│                  │                                                   │
+│        ┌─────────┴─────────┐                                        │
+│        ▼                   ▼                                        │
+│  ┌───────────────┐  ┌──────────────────┐                           │
+│  │  Local Store  │  │   P2P Peers      │◄──── other edge nodes     │
+│  │ Docker /      │  │   :5000          │      (mDNS or static)     │
+│  │ containerd    │  │   registry API   │                           │
+│  └───────────────┘  └──────────────────┘                           │
+│                                                                      │
+│          cache miss ──────────────────────────────────────────────► │
+└─────────────────────────────────────────────────────────────────────┘
+                                                         ▼
+                                              🌐 Upstream Registry
+                                                   (internet)
     </div>
   </div>
 </section>
