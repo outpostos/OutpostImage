@@ -2,6 +2,26 @@
 
 All notable changes to OutpostImage are documented in this file.
 
+## v1.1.0 (2026-04-19)
+
+### Features
+
+- **Kubernetes Endpoints peer discovery** — automatically discovers peers via headless Service Endpoints, eliminating manual peer configuration in k8s environments
+- **Helm chart v1.1.0** — production-ready deployment with RBAC, headless Service, and auto-discovery enabled by default
+- **HOST_IP-based self-exclusion** — uses Kubernetes downward API to detect own IP and exclude self from peer list
+
+### Changes
+
+- Helm chart `values.yaml` restructured: peer discovery config moved under `discovery.kubernetes` and `discovery.mdns`
+- mDNS disabled by default in Helm chart (not reliable across k8s nodes); still available for bare-metal
+- Added RBAC templates: ServiceAccount, Role (endpoints get/list/watch), RoleBinding
+- Added headless Service for Endpoints-based peer discovery
+- New CLI flags: `--k8s-discovery`, `--k8s-service-name`, `--k8s-namespace`
+
+### Dependencies
+
+- Added `k8s.io/client-go`, `k8s.io/api`, `k8s.io/apimachinery` for in-cluster Kubernetes API access
+
 ## v1.0.0 (2026-03-31)
 
 ### Features

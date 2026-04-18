@@ -39,6 +39,9 @@ type RegistryCmd struct {
 	MDNSEnabled    bool     `arg:"--mdns-enabled,env:MDNS_ENABLED" default:"true" help:"Enable mDNS peer discovery"`
 	MDNSInterface  string   `arg:"--mdns-interface,env:MDNS_INTERFACE" help:"Network interface for mDNS"`
 	MDNSDomain     string   `arg:"--mdns-domain,env:MDNS_DOMAIN" default:"local" help:"mDNS domain"`
+	K8sDiscovery   bool     `arg:"--k8s-discovery,env:K8S_DISCOVERY" default:"false" help:"Enable Kubernetes Endpoints peer discovery"`
+	K8sServiceName string   `arg:"--k8s-service-name,env:K8S_SERVICE_NAME" default:"outpostimage" help:"Kubernetes Service name for peer discovery"`
+	K8sNamespace   string   `arg:"--k8s-namespace,env:K8S_NAMESPACE" help:"Kubernetes namespace (auto-detected if empty)"`
 	LogLevel       string   `arg:"--log-level,env:LOG_LEVEL" default:"INFO" help:"Log level (DEBUG, INFO, WARN, ERROR)"`
 	CADir              string   `arg:"--ca-dir,env:CA_DIR" default:"/etc/outpostimage" help:"Directory for CA certificate and key"`
 	InsecureRegistries []string `arg:"--insecure-registry,env:INSECURE_REGISTRIES,separate" help:"Registries to connect without TLS verification (host:port or host)"`
@@ -132,6 +135,26 @@ func run(cmd *RegistryCmd) error {
 			g.Go(func() error {
 				defer mdnsSvc.Shutdown()
 				return mdnsSvc.Discover(ctx, pw)
+			})
+		}
+	}
+
+	// Initialize Kubernetes peer discovery
+	if cmd.K8sDiscovery {
+		registryPort := 5000
+		if _, portStr, ok := parseAddr(cmd.RegistryAddr); ok {
+			fmt.Sscanf(portStr, "%d", &registryPort)
+		}
+		k8sDisc, err := routing.NewKubernetesDiscovery(routing.KubernetesConfig{
+			ServiceName:  cmd.K8sServiceName,
+			Namespace:    cmd.K8sNamespace,
+			RegistryPort: registryPort,
+		})
+		if err != nil {
+			slog.Warn("kubernetes discovery init failed", "error", err)
+		} else {
+			g.Go(func() error {
+				return k8sDisc.Discover(ctx, pw)
 			})
 		}
 	}

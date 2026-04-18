@@ -1,5 +1,5 @@
 image:
-  repository: outpostimage
+  repository: ghcr.io/outpostos/outpostimage
   tag: latest
   pullPolicy: IfNotPresent
 
@@ -11,10 +11,21 @@ config:
   metricsAddr: ":9090"
   caDir: /etc/outpostimage
   peersFile: /etc/outpostimage/peers.txt
-  # Static peers list (comma-separated), alternative to peersFile
-  # peers: "node1:5000,node2:5000"
 
-# Peers configuration - content for the peers.txt file
+# Peer discovery configuration
+discovery:
+  # Kubernetes Endpoints-based peer discovery (recommended for k8s)
+  kubernetes:
+    enabled: true
+    # Service name to watch for Endpoints — matches the headless Service created by this chart
+    serviceName: ""  # defaults to release name + "-peers"
+  # mDNS peer discovery (useful for bare-metal / LAN, not reliable in k8s)
+  mdns:
+    enabled: false
+    interface: ""
+    domain: "local"
+
+# Static peers list (content for peers.txt)
 # Each line is a peer address in host:port format
 peers: ""
 
@@ -25,6 +36,10 @@ resources:
   limits:
     cpu: 500m
     memory: 256Mi
+
+serviceAccount:
+  create: true
+  name: ""
 
 serviceMonitor:
   enabled: false

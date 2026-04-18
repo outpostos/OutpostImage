@@ -13,6 +13,19 @@ data:
   METRICS_ADDR: {{ .Values.config.metricsAddr | quote }}
   CA_DIR: {{ .Values.config.caDir | quote }}
   PEERS_FILE: {{ .Values.config.peersFile | quote }}
+  {{- if .Values.discovery.kubernetes.enabled }}
+  K8S_DISCOVERY: "true"
+  K8S_SERVICE_NAME: {{ include "outpostimage.peersServiceName" . | quote }}
+  {{- end }}
+  {{- if .Values.discovery.mdns.enabled }}
+  MDNS_ENABLED: "true"
+  {{- if .Values.discovery.mdns.interface }}
+  MDNS_INTERFACE: {{ .Values.discovery.mdns.interface | quote }}
+  {{- end }}
+  MDNS_DOMAIN: {{ .Values.discovery.mdns.domain | quote }}
+  {{- else }}
+  MDNS_ENABLED: "false"
+  {{- end }}
   peers.txt: |
     {{- if .Values.peers }}
     {{ .Values.peers | nindent 4 }}

@@ -49,7 +49,7 @@ P2P OCI image distribution proxy for edge computing. OutpostImage turns every ed
 | Runtime support | containerd only | Docker + containerd (via HTTP proxy) |
 | Interception | containerd mirror config | HTTP Proxy (`HTTP_PROXY` env var) |
 | Extra storage | None (containerd reuse) | None (Docker/containerd reuse) |
-| P2P discovery | OCI/libp2p | Static peers + mDNS |
+| P2P discovery | OCI/libp2p | Static peers + mDNS + K8s Endpoints |
 | Multi-registry | Yes | Yes |
 | Invasiveness | Modifies containerd config | Zero-intrusion (env var only) |
 
@@ -141,6 +141,9 @@ All flags can also be set via environment variables (shown in parentheses).
 | `--mdns-domain` | `MDNS_DOMAIN` | `local` | mDNS domain |
 | `--log-level` | `LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `--ca-dir` | `CA_DIR` | `/etc/outpostimage` | Directory for CA certificate and key |
+| `--k8s-discovery` | `K8S_DISCOVERY` | `false` | Enable Kubernetes Endpoints peer discovery |
+| `--k8s-service-name` | `K8S_SERVICE_NAME` | `outpostimage` | Kubernetes Service name for peer discovery |
+| `--k8s-namespace` | `K8S_NAMESPACE` | — | Kubernetes namespace (auto-detected if empty) |
 | `--insecure-registry` | `INSECURE_REGISTRIES` | — | Registries to skip TLS verification, repeatable |
 
 ## API Endpoints Overview
@@ -164,6 +167,22 @@ OutpostImage exposes three servers:
 - `GET /readyz` — readiness probe
 
 See [docs/api-reference.md](docs/api-reference.md) for full API documentation.
+
+## Kubernetes Deployment (Helm)
+
+```bash
+helm install outpostimage charts/outpostimage \
+  --namespace outpostimage --create-namespace
+```
+
+By default, the chart:
+- Deploys a DaemonSet on every node
+- Creates a headless Service for automatic peer discovery via Kubernetes Endpoints
+- Sets up RBAC (ServiceAccount, Role, RoleBinding) for endpoints access
+- Disables mDNS (not reliable in k8s) and enables Kubernetes discovery
+- Uses `hostNetwork: true` so Docker/containerd can reach the proxy at `localhost:3128`
+
+No manual peer configuration needed — nodes discover each other automatically.
 
 ## Deployment
 
