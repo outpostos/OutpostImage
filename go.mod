@@ -1,6 +1,6 @@
 module github.com/outpostos/outpostimage
 
-go 1.25.0
+go 1.24.0
 
 require (
 	github.com/alexflint/go-arg v1.6.1
@@ -10,9 +10,9 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	go.etcd.io/bbolt v1.4.3
 	golang.org/x/sync v0.19.0
-	k8s.io/api v0.35.4
-	k8s.io/apimachinery v0.35.4
-	k8s.io/client-go v0.35.4
+	k8s.io/api v0.34.3
+	k8s.io/apimachinery v0.34.3
+	k8s.io/client-go v0.34.3
 )
 
 require (
@@ -26,6 +26,7 @@ require (
 	github.com/go-openapi/jsonpointer v0.21.0 // indirect
 	github.com/go-openapi/jsonreference v0.20.2 // indirect
 	github.com/go-openapi/swag v0.23.0 // indirect
+	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/gnostic-models v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
