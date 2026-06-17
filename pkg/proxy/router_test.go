@@ -39,7 +39,7 @@ func setupRouterTest(t *testing.T) *state.Tracker {
 	tracker := state.NewTracker(store)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go tracker.Track(ctx)
+	go func() { _ = tracker.Track(ctx) }()
 	time.Sleep(100 * time.Millisecond)
 	return tracker
 }

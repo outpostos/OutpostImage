@@ -126,7 +126,7 @@ func startTestNodeWithStore(t *testing.T, name string, store oci.Store) *testNod
 	addr := listener.Addr().String()
 
 	srv := &http.Server{Handler: mux}
-	go srv.Serve(listener)
+	go func() { _ = srv.Serve(listener) }()
 
 	return &testNode{
 		name:    name,
@@ -162,7 +162,7 @@ func startTestNode(t *testing.T, name string) *testNode {
 	addr := listener.Addr().String()
 
 	srv := &http.Server{Handler: mux}
-	go srv.Serve(listener)
+	go func() { _ = srv.Serve(listener) }()
 
 	return &testNode{
 		name:    name,
@@ -176,7 +176,7 @@ func startTestNode(t *testing.T, name string) *testNode {
 func (n *testNode) stop() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	n.server.Shutdown(ctx)
+	_ = n.server.Shutdown(ctx)
 }
 
 // initTracker performs the initial scan so the tracker knows about digests.
@@ -348,7 +348,7 @@ func TestP2PThreeNodeCluster(t *testing.T) {
 		// Run health check to mark peers as healthy
 		healthCtx, healthCancel := context.WithTimeout(ctx, 2*time.Second)
 		defer healthCancel()
-		go router.RunHealthCheck(healthCtx, 100*time.Millisecond)
+		go func() { _ = router.RunHealthCheck(healthCtx, 100*time.Millisecond) }()
 		time.Sleep(200 * time.Millisecond) // Wait for initial health check
 
 		// Lookup which peers have the digest
@@ -542,7 +542,7 @@ func TestRouterHealthCheckIntegration(t *testing.T) {
 	// Run health check
 	healthCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	go router.RunHealthCheck(healthCtx, 100*time.Millisecond)
+	go func() { _ = router.RunHealthCheck(healthCtx, 100*time.Millisecond) }()
 	time.Sleep(200 * time.Millisecond)
 
 	// Router should be ready

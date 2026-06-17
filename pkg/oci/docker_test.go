@@ -18,8 +18,12 @@ func setupDockerFixture(t *testing.T) string {
 	// Create directory structure
 	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
 	layerdbDir := filepath.Join(root, "image", "overlay2", "layerdb", "sha256")
-	os.MkdirAll(imagedbDir, 0755)
-	os.MkdirAll(layerdbDir, 0755)
+	if err := os.MkdirAll(imagedbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(layerdbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create a fake image config
 	imageConfig := map[string]any{
@@ -34,34 +38,50 @@ func setupDockerFixture(t *testing.T) string {
 	configDigest := digest.FromBytes(configData)
 	configHash := configDigest.Encoded()
 
-	os.WriteFile(filepath.Join(imagedbDir, configHash), configData, 0644)
+	if err := os.WriteFile(filepath.Join(imagedbDir, configHash), configData, 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create repositories.json
 	repos := map[string]any{
 		"Repositories": map[string]any{
 			"nginx": map[string]string{
-				"nginx:latest":                       configDigest.String(),
-				"nginx@" + configDigest.String():     configDigest.String(),
+				"nginx:latest":                   configDigest.String(),
+				"nginx@" + configDigest.String(): configDigest.String(),
 			},
 		},
 	}
 	reposData, _ := json.Marshal(repos)
-	os.WriteFile(filepath.Join(root, "image", "overlay2", "repositories.json"), reposData, 0644)
+	if err := os.WriteFile(filepath.Join(root, "image", "overlay2", "repositories.json"), reposData, 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create a layer entry in layerdb
 	diffID := "aaaa000000000000000000000000000000000000000000000000000000000000"
 	// First layer: chainID == diffID
 	chainDir := filepath.Join(layerdbDir, diffID)
-	os.MkdirAll(chainDir, 0755)
-	os.WriteFile(filepath.Join(chainDir, "diff"), []byte("sha256:"+diffID), 0644)
-	os.WriteFile(filepath.Join(chainDir, "cache-id"), []byte("cache-abc123"), 0644)
-	os.WriteFile(filepath.Join(chainDir, "size"), []byte("1024"), 0644)
+	if err := os.MkdirAll(chainDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chainDir, "diff"), []byte("sha256:"+diffID), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chainDir, "cache-id"), []byte("cache-abc123"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chainDir, "size"), []byte("1024"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create the overlay2 diff directory so layer tar computation works
 	diffDir := filepath.Join(root, "overlay2", "cache-abc123", "diff")
-	os.MkdirAll(diffDir, 0755)
+	if err := os.MkdirAll(diffDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	// Add a small file so the tar is non-empty
-	os.WriteFile(filepath.Join(diffDir, "hello"), []byte("world"), 0644)
+	if err := os.WriteFile(filepath.Join(diffDir, "hello"), []byte("world"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	return root
 }
@@ -112,7 +132,9 @@ func TestDockerStore_ListImages(t *testing.T) {
 func TestDockerStore_Resolve(t *testing.T) {
 	root := setupDockerFixture(t)
 	store := NewDockerStore(root)
-	store.Init(context.Background())
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 
 	dgst, err := store.Resolve(context.Background(), "nginx:latest")
 	if err != nil {
@@ -131,7 +153,9 @@ func TestDockerStore_Resolve(t *testing.T) {
 func TestDockerStore_GetManifest(t *testing.T) {
 	root := setupDockerFixture(t)
 	store := NewDockerStore(root)
-	store.Init(context.Background())
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 
 	dgst, _ := store.Resolve(context.Background(), "nginx:latest")
 	data, mediaType, err := store.GetManifest(context.Background(), dgst)
@@ -155,7 +179,9 @@ func TestDockerStore_GetManifest(t *testing.T) {
 func TestDockerStore_GetBlob(t *testing.T) {
 	root := setupDockerFixture(t)
 	store := NewDockerStore(root)
-	store.Init(context.Background())
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 
 	dgst, _ := store.Resolve(context.Background(), "nginx:latest")
 	reader, size, err := store.GetBlob(context.Background(), dgst)
@@ -172,7 +198,9 @@ func TestDockerStore_GetBlob(t *testing.T) {
 func TestDockerStore_HasBlob(t *testing.T) {
 	root := setupDockerFixture(t)
 	store := NewDockerStore(root)
-	store.Init(context.Background())
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 
 	dgst, _ := store.Resolve(context.Background(), "nginx:latest")
 	if !store.HasBlob(context.Background(), dgst) {
@@ -188,7 +216,9 @@ func TestDockerStore_HasBlob(t *testing.T) {
 func TestDockerStore_HasBlob_Layer(t *testing.T) {
 	root := setupDockerFixture(t)
 	store := NewDockerStore(root)
-	store.Init(context.Background())
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 
 	// Trigger lazy manifest building which computes layer tar digests
 	configDgst, _ := store.Resolve(context.Background(), "nginx:latest")

@@ -664,7 +664,7 @@ func (ds *DockerStore) scanLayerDB() error {
 		var size int64
 		sizeData, err := os.ReadFile(filepath.Join(layerDir, "size"))
 		if err == nil {
-			fmt.Sscanf(strings.TrimSpace(string(sizeData)), "%d", &size)
+			_, _ = fmt.Sscanf(strings.TrimSpace(string(sizeData)), "%d", &size)
 		}
 
 		chainDgst, _ := digest.Parse(chainID)

@@ -202,7 +202,9 @@ func TestContainerdStore_Subscribe(t *testing.T) {
 func TestContainerdStore_ListImages_Empty(t *testing.T) {
 	root := t.TempDir()
 	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
-	os.MkdirAll(blobDir, 0755)
+	if err := os.MkdirAll(blobDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	store := NewContainerdStore(root)
 	ctx := context.Background()

@@ -35,11 +35,6 @@ func (cs *ContainerdStore) contentStorePath() string {
 	return filepath.Join(cs.root, "io.containerd.content.v1.content", "blobs", "sha256")
 }
 
-// ingestPath returns the path to containerd's ingest directory.
-func (cs *ContainerdStore) ingestPath() string {
-	return filepath.Join(cs.root, "io.containerd.content.v1.content", "ingest")
-}
-
 // metaDBPath returns the path to containerd's metadata bolt DB.
 func (cs *ContainerdStore) metaDBPath() string {
 	return filepath.Join(cs.root, "io.containerd.metadata.v1.bolt", "meta.db")

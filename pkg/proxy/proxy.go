@@ -93,7 +93,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 // handleConnect handles HTTPS CONNECT tunnel requests.
@@ -148,8 +148,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	done := make(chan struct{}, 2)
 	// Use clientBuf as reader to drain any bytes the HTTP server pre-buffered.
-	go func() { io.Copy(destConn, clientBuf); done <- struct{}{} }()
-	go func() { io.Copy(clientConn, destConn); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(destConn, clientBuf); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(clientConn, destConn); done <- struct{}{} }()
 	<-done
 }
 
@@ -235,7 +235,7 @@ func (p *Proxy) forwardToUpstream(clientTLS net.Conn, req *http.Request, hostPor
 	}
 	defer resp.Body.Close()
 
-	resp.Write(clientTLS)
+	_ = resp.Write(clientTLS)
 }
 
 // writeHTTPError writes a simple HTTP error response to a raw connection.
@@ -248,7 +248,7 @@ func writeHTTPError(conn net.Conn, status int, msg string) {
 		Body:       io.NopCloser(strings.NewReader(msg)),
 	}
 	resp.Header.Set("Content-Type", "text/plain")
-	resp.Write(conn)
+	_ = resp.Write(conn)
 }
 
 // bufferedResponseWriter captures an HTTP response in memory so we can
@@ -283,7 +283,7 @@ func (w *bufferedResponseWriter) WriteTo(conn net.Conn) {
 		Body:          io.NopCloser(strings.NewReader(string(w.body))),
 		ContentLength: int64(len(w.body)),
 	}
-	resp.Write(conn)
+	_ = resp.Write(conn)
 }
 
 // hostOnly extracts the hostname from a host:port string.

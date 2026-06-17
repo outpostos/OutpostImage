@@ -20,7 +20,7 @@ func createTestBlobServer(t *testing.T, data []byte) *httptest.Server {
 		if rangeHeader == "" {
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
 			w.WriteHeader(http.StatusOK)
-			w.Write(data)
+			_, _ = w.Write(data)
 			return
 		}
 
@@ -43,7 +43,7 @@ func createTestBlobServer(t *testing.T, data []byte) *httptest.Server {
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(data)))
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(chunk)))
 		w.WriteHeader(http.StatusPartialContent)
-		w.Write(chunk)
+		_, _ = w.Write(chunk)
 	}))
 }
 

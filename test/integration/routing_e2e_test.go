@@ -54,7 +54,7 @@ func TestP2PRoutingWithParallelFetchE2E(t *testing.T) {
 	// Run health checks
 	healthCtx, healthCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer healthCancel()
-	go router.RunHealthCheck(healthCtx, 100*time.Millisecond)
+	go func() { _ = router.RunHealthCheck(healthCtx, 100*time.Millisecond) }()
 	time.Sleep(300 * time.Millisecond)
 
 	// Test 1: Router discovers config digest on remote peers
@@ -73,7 +73,7 @@ func TestP2PRoutingWithParallelFetchE2E(t *testing.T) {
 	t.Run("RequestRouter_P2PFetch", func(t *testing.T) {
 		localTracker := state.NewTracker(localNode.store)
 		trackCtx, trackCancel := context.WithCancel(ctx)
-		go localTracker.Track(trackCtx)
+		go func() { _ = localTracker.Track(trackCtx) }()
 		time.Sleep(50 * time.Millisecond)
 		defer trackCancel()
 
@@ -110,7 +110,7 @@ func TestP2PRoutingWithParallelFetchE2E(t *testing.T) {
 		localNode.store.addImage("library/remote:latest", configData, blobData)
 		localTracker := state.NewTracker(localNode.store)
 		trackCtx, trackCancel := context.WithCancel(ctx)
-		go localTracker.Track(trackCtx)
+		go func() { _ = localTracker.Track(trackCtx) }()
 		time.Sleep(50 * time.Millisecond)
 		defer trackCancel()
 
@@ -169,7 +169,7 @@ func TestP2PProxyE2E(t *testing.T) {
 	localStore := newMockStore("local")
 	localTracker := state.NewTracker(localStore)
 	trackCtx, trackCancel := context.WithCancel(ctx)
-	go localTracker.Track(trackCtx)
+	go func() { _ = localTracker.Track(trackCtx) }()
 	time.Sleep(50 * time.Millisecond)
 	defer trackCancel()
 
@@ -178,7 +178,7 @@ func TestP2PProxyE2E(t *testing.T) {
 	router := routing.NewStaticRouter(pw)
 	healthCtx, healthCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer healthCancel()
-	go router.RunHealthCheck(healthCtx, 100*time.Millisecond)
+	go func() { _ = router.RunHealthCheck(healthCtx, 100*time.Millisecond) }()
 	time.Sleep(200 * time.Millisecond)
 
 	// Create proxy with P2P interceptor
@@ -238,7 +238,7 @@ func TestPeerWatcherDynamicMergeE2E(t *testing.T) {
 	router := routing.NewStaticRouter(pw)
 	healthCtx, healthCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer healthCancel()
-	go router.RunHealthCheck(healthCtx, 100*time.Millisecond)
+	go func() { _ = router.RunHealthCheck(healthCtx, 100*time.Millisecond) }()
 	time.Sleep(300 * time.Millisecond)
 
 	ready, err := router.Ready(ctx)
@@ -299,7 +299,7 @@ func TestHTTPSProxyInterceptionP2P(t *testing.T) {
 	localStore := newMockStore("local-https")
 	localTracker := state.NewTracker(localStore)
 	trackCtx, trackCancel := context.WithCancel(ctx)
-	go localTracker.Track(trackCtx)
+	go func() { _ = localTracker.Track(trackCtx) }()
 	time.Sleep(50 * time.Millisecond)
 	defer trackCancel()
 
@@ -308,7 +308,7 @@ func TestHTTPSProxyInterceptionP2P(t *testing.T) {
 	router := routing.NewStaticRouter(pw)
 	healthCtx, healthCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer healthCancel()
-	go router.RunHealthCheck(healthCtx, 100*time.Millisecond)
+	go func() { _ = router.RunHealthCheck(healthCtx, 100*time.Millisecond) }()
 	time.Sleep(200 * time.Millisecond)
 
 	// --- Proxy with insecure registry for the upstream TLS server ---

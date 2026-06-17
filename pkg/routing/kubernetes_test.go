@@ -108,7 +108,7 @@ func TestKubernetesDiscovery_DiscoverInitialLoad(t *testing.T) {
 	defer cancel()
 
 	// Run discovery in background — it will load initial endpoints then block on watch
-	go kd.Discover(ctx, pw)
+	go func() { _ = kd.Discover(ctx, pw) }()
 
 	// Give it a moment to process
 	time.Sleep(200 * time.Millisecond)
@@ -201,7 +201,7 @@ func TestKubernetesDiscovery_WatchUpdates(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	go kd.Discover(ctx, pw)
+	go func() { _ = kd.Discover(ctx, pw) }()
 	time.Sleep(300 * time.Millisecond)
 
 	// Initially: 10.0.0.2 only (self excluded)
@@ -260,7 +260,7 @@ func TestKubernetesDiscovery_WatchPeerRemoval(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	go kd.Discover(ctx, pw)
+	go func() { _ = kd.Discover(ctx, pw) }()
 	time.Sleep(300 * time.Millisecond)
 
 	if len(pw.Peers()) != 2 {
@@ -320,7 +320,7 @@ func TestKubernetesDiscovery_Resync(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	go kd.Discover(ctx, pw)
+	go func() { _ = kd.Discover(ctx, pw) }()
 	time.Sleep(200 * time.Millisecond)
 
 	// Verify initial state

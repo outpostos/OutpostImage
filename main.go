@@ -121,7 +121,7 @@ func run(cmd *RegistryCmd) error {
 		// Extract port from registry addr for mDNS advertisement
 		registryPort := 5000
 		if _, portStr, ok := parseAddr(cmd.RegistryAddr); ok {
-			fmt.Sscanf(portStr, "%d", &registryPort)
+			_, _ = fmt.Sscanf(portStr, "%d", &registryPort)
 		}
 		mdnsSvc := routing.NewMDNSService(routing.MDNSConfig{
 			Interface: cmd.MDNSInterface,
@@ -143,7 +143,7 @@ func run(cmd *RegistryCmd) error {
 	if cmd.K8sDiscovery {
 		registryPort := 5000
 		if _, portStr, ok := parseAddr(cmd.RegistryAddr); ok {
-			fmt.Sscanf(portStr, "%d", &registryPort)
+			_, _ = fmt.Sscanf(portStr, "%d", &registryPort)
 		}
 		k8sDisc, err := routing.NewKubernetesDiscovery(routing.KubernetesConfig{
 			ServiceName:  cmd.K8sServiceName,

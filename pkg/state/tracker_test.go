@@ -138,7 +138,7 @@ func TestTracker_AllDigests(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go tracker.Track(ctx)
+	go func() { _ = tracker.Track(ctx) }()
 	time.Sleep(100 * time.Millisecond)
 
 	all := tracker.AllDigests()
@@ -157,7 +157,7 @@ func TestTracker_NonexistentDigest(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go tracker.Track(ctx)
+	go func() { _ = tracker.Track(ctx) }()
 	time.Sleep(100 * time.Millisecond)
 
 	fake, _ := digest.Parse("sha256:0000000000000000000000000000000000000000000000000000000000000000")

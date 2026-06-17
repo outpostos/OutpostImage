@@ -36,7 +36,7 @@ func (h *DigestHandler) handleListDigests(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"digests": out,
 		"count":   len(out),
 	})
@@ -54,13 +54,13 @@ func (h *DigestHandler) handleGetDigest(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "invalid digest format"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid digest format"})
 		return
 	}
 
 	if h.tracker.HasDigest(dgst) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"digest": dgst.String(),
 			"exists": true,
 		})
@@ -69,7 +69,7 @@ func (h *DigestHandler) handleGetDigest(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNotFound)
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"digest": dgst.String(),
 		"exists": false,
 	})

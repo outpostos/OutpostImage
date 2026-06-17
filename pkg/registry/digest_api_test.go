@@ -45,7 +45,7 @@ func setupTestHandler(t *testing.T) (*DigestHandler, *http.ServeMux) {
 	tracker := state.NewTracker(store)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go tracker.Track(ctx)
+	go func() { _ = tracker.Track(ctx) }()
 	time.Sleep(100 * time.Millisecond)
 
 	handler := NewDigestHandler(tracker)
@@ -67,7 +67,7 @@ func TestHandleListDigests(t *testing.T) {
 	}
 
 	var body map[string]any
-	json.NewDecoder(rec.Body).Decode(&body)
+	_ = json.NewDecoder(rec.Body).Decode(&body)
 
 	count := int(body["count"].(float64))
 	if count != 2 {
@@ -92,7 +92,7 @@ func TestHandleGetDigest_Exists(t *testing.T) {
 	}
 
 	var body map[string]any
-	json.NewDecoder(rec.Body).Decode(&body)
+	_ = json.NewDecoder(rec.Body).Decode(&body)
 
 	if body["exists"] != true {
 		t.Fatalf("exists = %v, want true", body["exists"])
@@ -111,7 +111,7 @@ func TestHandleGetDigest_NotFound(t *testing.T) {
 	}
 
 	var body map[string]any
-	json.NewDecoder(rec.Body).Decode(&body)
+	_ = json.NewDecoder(rec.Body).Decode(&body)
 
 	if body["exists"] != false {
 		t.Fatalf("exists = %v, want false", body["exists"])

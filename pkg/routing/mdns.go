@@ -215,7 +215,7 @@ func (s *MDNSService) DiscoveredPeers() []string {
 // Shutdown stops the mDNS server.
 func (s *MDNSService) Shutdown() {
 	if s.server != nil {
-		s.server.Shutdown()
+		_ = s.server.Shutdown()
 		slog.Info("mDNS server stopped")
 	}
 }
