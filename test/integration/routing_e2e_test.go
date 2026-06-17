@@ -152,7 +152,7 @@ func TestP2PProxyE2E(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == fmt.Sprintf("/v2/library/app/blobs/%s", upstreamDigest) {
 			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Write(upstreamBlob)
+			_, _ = w.Write(upstreamBlob)
 			return
 		}
 		w.WriteHeader(404)
@@ -278,7 +278,7 @@ func TestHTTPSProxyInterceptionP2P(t *testing.T) {
 		upstreamHit = true
 		if r.URL.Path == blobPath {
 			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Write(blobData)
+			_, _ = w.Write(blobData)
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)

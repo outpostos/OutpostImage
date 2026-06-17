@@ -50,7 +50,7 @@ func TestRequestRouter_BlobLocal(t *testing.T) {
 	// Start a local registry server
 	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("local blob"))
+		_, _ = w.Write([]byte("local blob"))
 	}))
 	defer local.Close()
 

@@ -224,7 +224,7 @@ func (r *StaticRouter) queryPeerDigest(ctx context.Context, peer string, dgst di
 	var body struct {
 		Exists bool `json:"exists"`
 	}
-	json.NewDecoder(resp.Body).Decode(&body)
+	_ = json.NewDecoder(resp.Body).Decode(&body)
 	return body.Exists
 }
 

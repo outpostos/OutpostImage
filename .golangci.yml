@@ -1,0 +1,12 @@
+linters-settings:
+  errcheck:
+    check-type-assertions: false
+
+issues:
+  exclude-rules:
+    # corev1.Endpoints is deprecated in k8s 1.33+ but still functional;
+    # migration to EndpointSlices is tracked separately.
+    - path: pkg/routing/kubernetes
+      linters:
+        - staticcheck
+      text: "SA1019"

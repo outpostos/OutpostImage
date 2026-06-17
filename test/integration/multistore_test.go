@@ -263,7 +263,9 @@ func TestStoreAutoDetection(t *testing.T) {
 		root := t.TempDir()
 		// Create containerd content structure
 		containerdBlobs := filepath.Join(root, "containerd", "io.containerd.content.v1.content", "blobs", "sha256")
-		os.MkdirAll(containerdBlobs, 0755)
+		if err := os.MkdirAll(containerdBlobs, 0755); err != nil {
+			t.Fatal(err)
+		}
 
 		stores := oci.DetectStores(ctx, filepath.Join(root, "docker"), filepath.Join(root, "containerd"))
 		if len(stores) != 1 {
@@ -279,10 +281,14 @@ func TestStoreAutoDetection(t *testing.T) {
 		root := t.TempDir()
 		// Create Docker imagedb structure
 		dockerImageDB := filepath.Join(root, "docker", "image", "overlay2", "imagedb", "content", "sha256")
-		os.MkdirAll(dockerImageDB, 0755)
+		if err := os.MkdirAll(dockerImageDB, 0755); err != nil {
+			t.Fatal(err)
+		}
 		// Create repositories.json (required for init)
 		reposPath := filepath.Join(root, "docker", "image", "overlay2", "repositories.json")
-		os.WriteFile(reposPath, []byte(`{"Repositories":{}}`), 0644)
+		if err := os.WriteFile(reposPath, []byte(`{"Repositories":{}}`), 0644); err != nil {
+			t.Fatal(err)
+		}
 
 		stores := oci.DetectStores(ctx, filepath.Join(root, "docker"), filepath.Join(root, "containerd"))
 		if len(stores) != 1 {
@@ -331,7 +337,7 @@ func TestMultiStoreNodeE2E(t *testing.T) {
 			Digests []string `json:"digests"`
 			Count   int      `json:"count"`
 		}
-		json.NewDecoder(resp.Body).Decode(&body)
+		_ = json.NewDecoder(resp.Body).Decode(&body)
 
 		// Should see digests from both stores
 		if body.Count < 2 {

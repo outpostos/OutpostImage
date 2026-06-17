@@ -156,7 +156,7 @@ func RequestRouter(tracker *state.Tracker, localAddr string, router ...routing.R
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("{}"))
+			_, _ = w.Write([]byte("{}"))
 			slog.Info("v2 version check served locally", "source", RouteLocal, "path", path)
 			return true
 		}
@@ -239,7 +239,7 @@ func tryManifestFrom(ctx context.Context, w http.ResponseWriter, addr, path stri
 	// Success — copy the response to the caller
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	_, _ = io.Copy(w, resp.Body)
 	return true
 }
 
@@ -283,7 +283,7 @@ func proxyToLocal(w http.ResponseWriter, r *http.Request, localAddr string) {
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
-			w.Write(buf[:n])
+			_, _ = w.Write(buf[:n])
 		}
 		if err != nil {
 			break

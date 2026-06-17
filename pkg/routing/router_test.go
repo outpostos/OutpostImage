@@ -71,7 +71,7 @@ func TestStaticRouter_Lookup_PeerHasDigest(t *testing.T) {
 	// Start a mock peer server that responds "exists: true"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/api/v1/digests/") {
-			json.NewEncoder(w).Encode(map[string]bool{"exists": true})
+			_ = json.NewEncoder(w).Encode(map[string]bool{"exists": true})
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -99,7 +99,7 @@ func TestStaticRouter_Lookup_PeerDoesNotHaveDigest(t *testing.T) {
 	dgst := digest.FromString("missing")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]bool{"exists": false})
+		_ = json.NewEncoder(w).Encode(map[string]bool{"exists": false})
 	}))
 	defer srv.Close()
 

@@ -104,7 +104,7 @@ func TestHandleVersionCheck(t *testing.T) {
 	}
 
 	var body map[string]any
-	json.NewDecoder(rec.Body).Decode(&body)
+	_ = json.NewDecoder(rec.Body).Decode(&body)
 	if len(body) != 0 {
 		t.Fatalf("expected empty JSON object, got %v", body)
 	}
@@ -149,7 +149,7 @@ func TestHandleGetManifest_NotFound(t *testing.T) {
 	}
 
 	var body map[string]any
-	json.NewDecoder(rec.Body).Decode(&body)
+	_ = json.NewDecoder(rec.Body).Decode(&body)
 	errors, ok := body["errors"].([]any)
 	if !ok || len(errors) == 0 {
 		t.Fatal("expected OCI error response with errors array")
@@ -218,7 +218,7 @@ func TestHandleGetBlob_NotFound(t *testing.T) {
 	}
 
 	var body map[string]any
-	json.NewDecoder(rec.Body).Decode(&body)
+	_ = json.NewDecoder(rec.Body).Decode(&body)
 	errors := body["errors"].([]any)
 	errObj := errors[0].(map[string]any)
 	if errObj["code"] != "BLOB_UNKNOWN" {
@@ -235,7 +235,7 @@ func TestOCIErrorFormat(t *testing.T) {
 	}
 
 	var body map[string]any
-	json.NewDecoder(rec.Body).Decode(&body)
+	_ = json.NewDecoder(rec.Body).Decode(&body)
 
 	errors, ok := body["errors"].([]any)
 	if !ok {

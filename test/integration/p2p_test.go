@@ -276,7 +276,7 @@ func TestP2PThreeNodeCluster(t *testing.T) {
 			Exists bool   `json:"exists"`
 			Digest string `json:"digest"`
 		}
-		json.NewDecoder(resp.Body).Decode(&body)
+		_ = json.NewDecoder(resp.Body).Decode(&body)
 		if !body.Exists {
 			t.Fatal("expected digest to exist on node1")
 		}
@@ -458,7 +458,7 @@ func TestP2PThreeNodeCluster(t *testing.T) {
 			Digests []string `json:"digests"`
 			Count   int      `json:"count"`
 		}
-		json.NewDecoder(resp.Body).Decode(&body)
+		_ = json.NewDecoder(resp.Body).Decode(&body)
 
 		if body.Count == 0 {
 			t.Fatal("expected non-zero digest count on node1")
@@ -510,7 +510,7 @@ func TestHealthCheckIntegration(t *testing.T) {
 	}
 
 	var body map[string]string
-	json.NewDecoder(resp.Body).Decode(&body)
+	_ = json.NewDecoder(resp.Body).Decode(&body)
 	if body["status"] != "ok" {
 		t.Fatalf("healthz status=%q, want ok", body["status"])
 	}

@@ -65,7 +65,7 @@ func TestProxy_OCIInterceptor(t *testing.T) {
 	proxy := NewProxy(func(w http.ResponseWriter, r *http.Request) bool {
 		intercepted = true
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("intercepted"))
+		_, _ = w.Write([]byte("intercepted"))
 		return true
 	})
 
@@ -85,7 +85,7 @@ func TestProxy_OCIInterceptor(t *testing.T) {
 func TestProxy_NonOCINotIntercepted(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("passed through"))
+		_, _ = w.Write([]byte("passed through"))
 	}))
 	defer backend.Close()
 
@@ -184,7 +184,7 @@ func TestBufferedResponseWriter(t *testing.T) {
 	w := newBufferedResponseWriter()
 	w.Header().Set("X-Test", "hello")
 	w.WriteHeader(http.StatusCreated)
-	w.Write([]byte("body content"))
+	_, _ = w.Write([]byte("body content"))
 
 	if w.statusCode != http.StatusCreated {
 		t.Errorf("statusCode = %d, want %d", w.statusCode, http.StatusCreated)
@@ -224,7 +224,7 @@ func TestBufferedResponseWriter_WriteTo(t *testing.T) {
 
 	w := newBufferedResponseWriter()
 	w.WriteHeader(http.StatusAccepted)
-	w.Write([]byte("test body"))
+	_, _ = w.Write([]byte("test body"))
 
 	go func() {
 		w.WriteTo(server)

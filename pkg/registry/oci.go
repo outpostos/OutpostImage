@@ -84,7 +84,7 @@ func (h *OCIHandler) handleV2(w http.ResponseWriter, r *http.Request) {
 func (h *OCIHandler) handleVersionCheck(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
-	json.NewEncoder(w).Encode(map[string]any{})
+	_ = json.NewEncoder(w).Encode(map[string]any{})
 }
 
 // handleGetManifest implements GET /v2/{name}/manifests/{reference}.
@@ -110,7 +110,7 @@ func (h *OCIHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, n
 			w.Header().Set("Content-Length", strconv.Itoa(len(cached.data)))
 			w.Header().Set("Docker-Content-Digest", contentDgst.String())
 			w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
-			w.Write(cached.data)
+			_, _ = w.Write(cached.data)
 			return
 		}
 
@@ -125,7 +125,7 @@ func (h *OCIHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, n
 		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 		w.Header().Set("Docker-Content-Digest", actualDigest.String())
 		w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
-		w.Write(data)
+		_, _ = w.Write(data)
 		return
 	}
 
@@ -168,7 +168,7 @@ func (h *OCIHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, n
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.Header().Set("Docker-Content-Digest", contentDigest.String())
 	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
-	w.Write(data)
+	_, _ = w.Write(data)
 }
 
 // handleHeadBlob implements HEAD /v2/{name}/blobs/{digest}.
@@ -233,14 +233,14 @@ func (h *OCIHandler) handleGetBlob(w http.ResponseWriter, r *http.Request, dgstS
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", rangeLen))
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, size))
 		w.WriteHeader(http.StatusPartialContent)
-		w.Write(data[start : end+1])
+		_, _ = w.Write(data[start : end+1])
 		return
 	}
 
 	// Full content response
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", size))
-	io.Copy(w, reader)
+	_, _ = io.Copy(w, reader)
 }
 
 // parseRangeHeader parses a Range header value like "bytes=0-1023" or "bytes=1024-".
@@ -301,7 +301,7 @@ func parseRangeHeader(rangeHeader string, totalSize int64) (int64, int64, bool) 
 func writeOCIError(w http.ResponseWriter, status int, code, message string, detail any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"errors": []map[string]any{
 			{
 				"code":    code,
