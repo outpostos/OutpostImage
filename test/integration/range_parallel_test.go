@@ -343,9 +343,12 @@ func TestLatencyAwareBalancerE2E(t *testing.T) {
 
 	balancer := routing.NewLatencyBalancer(peers, latencies)
 
-	// Sample 1000 selections and count distribution
+	// Sample 10000 selections and count distribution.
+	// 10000 samples ensures slow-peer (~0.2% probability) is selected ~20 times on average.
+	// P(zero selections in 10000) ≈ 1.7e-9, making the NoStarvation subtest effectively deterministic.
+	const sampleCount = 10000
 	counts := make(map[string]int)
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < sampleCount; i++ {
 		peer, ok := balancer.Next()
 		if !ok {
 			t.Fatal("Next() returned false")
@@ -359,10 +362,10 @@ func TestLatencyAwareBalancerE2E(t *testing.T) {
 			t.Errorf("fast peer (%d) should be selected more than slow peer (%d)",
 				counts["fast-peer:5000"], counts["slow-peer:5000"])
 		}
-		t.Logf("Selection distribution over 1000 samples:")
+		t.Logf("Selection distribution over %d samples:", sampleCount)
 		for peer, count := range counts {
-			pct := float64(count) / 10.0
-			t.Logf("  %s: %d (%.1f%%)", peer, count, pct)
+			pct := float64(count) * 100.0 / float64(sampleCount)
+			t.Logf("  %s: %d (%.2f%%)", peer, count, pct)
 		}
 	})
 
