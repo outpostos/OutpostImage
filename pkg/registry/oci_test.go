@@ -13,6 +13,7 @@ import (
 	"github.com/opencontainers/go-digest"
 
 	"github.com/outpostos/outpostimage/pkg/oci"
+	"github.com/outpostos/outpostimage/pkg/routing"
 )
 
 // ociMockStore implements oci.Store for OCI handler testing.
@@ -83,6 +84,50 @@ func newOCITestMux() *http.ServeMux {
 
 	handler := NewOCIHandler(store)
 	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+	return mux
+}
+
+func newOCITestStore() (*ociMockStore, digest.Digest, digest.Digest, []byte, []byte) {
+	manifestData := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json"}`)
+	manifestDigest := digest.FromBytes(manifestData)
+	blobData := []byte("remote blob content")
+	blobDigest := digest.FromBytes(blobData)
+
+	store := &ociMockStore{
+		manifests: map[digest.Digest][]byte{
+			manifestDigest: manifestData,
+		},
+		blobs: map[digest.Digest][]byte{
+			manifestDigest: manifestData,
+			blobDigest:     blobData,
+		},
+		tags: map[string]digest.Digest{
+			"library/remote:latest": manifestDigest,
+		},
+	}
+
+	return store, manifestDigest, blobDigest, manifestData, blobData
+}
+
+func newEmptyOCITestStore() *ociMockStore {
+	return &ociMockStore{
+		manifests: map[digest.Digest][]byte{},
+		blobs:     map[digest.Digest][]byte{},
+		tags:      map[string]digest.Digest{},
+	}
+}
+
+func newRegistryTestServer(store oci.Store, opts ...Option) *httptest.Server {
+	mux := http.NewServeMux()
+	handler := NewOCIHandler(store, opts...)
+	handler.RegisterRoutes(mux)
+	return httptest.NewServer(mux)
+}
+
+func newRegistryFallbackMux(store oci.Store, opts ...Option) *http.ServeMux {
+	mux := http.NewServeMux()
+	handler := NewOCIHandler(store, opts...)
 	handler.RegisterRoutes(mux)
 	return mux
 }
@@ -223,6 +268,156 @@ func TestHandleGetBlob_NotFound(t *testing.T) {
 	errObj := errors[0].(map[string]any)
 	if errObj["code"] != "BLOB_UNKNOWN" {
 		t.Fatalf("error code = %v, want BLOB_UNKNOWN", errObj["code"])
+	}
+}
+
+func TestRegistryFallback_LocalMissP2PHit(t *testing.T) {
+	peerStore, manifestDigest, blobDigest, manifestData, blobData := newOCITestStore()
+	peer := newRegistryTestServer(peerStore)
+	defer peer.Close()
+
+	pw := routing.NewPeerWatcher([]string{peer.Listener.Addr().String()})
+	router := routing.NewStaticRouter(pw)
+	mux := newRegistryFallbackMux(newEmptyOCITestStore(), WithRouter(router), WithUpstreamFallback(false), WithMetrics(nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/remote/manifests/latest", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("manifest status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), manifestData) {
+		t.Fatalf("manifest body = %q, want %q", rec.Body.Bytes(), manifestData)
+	}
+	if got := rec.Header().Get("Docker-Content-Digest"); got != manifestDigest.String() {
+		t.Fatalf("manifest digest = %q, want %q", got, manifestDigest)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v2/library/remote/blobs/"+blobDigest.String(), nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("blob status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), blobData) {
+		t.Fatalf("blob body = %q, want %q", rec.Body.Bytes(), blobData)
+	}
+}
+
+func TestRegistryFallback_P2PMissUpstreamHit(t *testing.T) {
+	upstreamStore, manifestDigest, blobDigest, manifestData, blobData := newOCITestStore()
+	upstream := newRegistryTestServer(upstreamStore)
+	defer upstream.Close()
+
+	pw := routing.NewPeerWatcher([]string{"127.0.0.1:1"})
+	router := routing.NewStaticRouter(pw)
+	mux := newRegistryFallbackMux(
+		newEmptyOCITestStore(),
+		WithRouter(router),
+		WithUpstreamRegistry(upstream.URL),
+		WithMetrics(nil),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/remote/manifests/latest", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("manifest status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), manifestData) {
+		t.Fatalf("manifest body = %q, want %q", rec.Body.Bytes(), manifestData)
+	}
+	if got := rec.Header().Get("Docker-Content-Digest"); got != manifestDigest.String() {
+		t.Fatalf("manifest digest = %q, want %q", got, manifestDigest)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v2/library/remote/blobs/"+blobDigest.String(), nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("blob status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), blobData) {
+		t.Fatalf("blob body = %q, want %q", rec.Body.Bytes(), blobData)
+	}
+}
+
+func TestRegistryFallback_UpstreamDisabledReturns404(t *testing.T) {
+	pw := routing.NewPeerWatcher([]string{"127.0.0.1:1"})
+	router := routing.NewStaticRouter(pw)
+	mux := newRegistryFallbackMux(newEmptyOCITestStore(), WithRouter(router), WithUpstreamFallback(false), WithMetrics(nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/remote/manifests/latest", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("manifest status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+
+	fakeDigest := "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	req = httptest.NewRequest(http.MethodGet, "/v2/library/remote/blobs/"+fakeDigest, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("blob status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestRegistryFallback_HEADAndGETConsistent(t *testing.T) {
+	peerStore, manifestDigest, blobDigest, _, blobData := newOCITestStore()
+	peer := newRegistryTestServer(peerStore)
+	defer peer.Close()
+
+	pw := routing.NewPeerWatcher([]string{peer.Listener.Addr().String()})
+	router := routing.NewStaticRouter(pw)
+	mux := newRegistryFallbackMux(newEmptyOCITestStore(), WithRouter(router), WithUpstreamFallback(false), WithMetrics(nil))
+
+	manifestPath := "/v2/library/remote/manifests/latest"
+	headReq := httptest.NewRequest(http.MethodHead, manifestPath, nil)
+	headRec := httptest.NewRecorder()
+	mux.ServeHTTP(headRec, headReq)
+
+	getReq := httptest.NewRequest(http.MethodGet, manifestPath, nil)
+	getRec := httptest.NewRecorder()
+	mux.ServeHTTP(getRec, getReq)
+
+	if headRec.Code != http.StatusOK || getRec.Code != http.StatusOK {
+		t.Fatalf("manifest statuses HEAD=%d GET=%d, want both 200", headRec.Code, getRec.Code)
+	}
+	if headRec.Body.Len() != 0 {
+		t.Fatalf("HEAD manifest body length = %d, want 0", headRec.Body.Len())
+	}
+	for _, name := range []string{"Content-Length", "Docker-Content-Digest", "Docker-Distribution-API-Version"} {
+		if headRec.Header().Get(name) != getRec.Header().Get(name) {
+			t.Fatalf("manifest %s HEAD=%q GET=%q", name, headRec.Header().Get(name), getRec.Header().Get(name))
+		}
+	}
+	if getRec.Header().Get("Docker-Content-Digest") != manifestDigest.String() {
+		t.Fatalf("manifest digest = %q, want %q", getRec.Header().Get("Docker-Content-Digest"), manifestDigest)
+	}
+
+	blobPath := "/v2/library/remote/blobs/" + blobDigest.String()
+	headReq = httptest.NewRequest(http.MethodHead, blobPath, nil)
+	headRec = httptest.NewRecorder()
+	mux.ServeHTTP(headRec, headReq)
+
+	getReq = httptest.NewRequest(http.MethodGet, blobPath, nil)
+	getRec = httptest.NewRecorder()
+	mux.ServeHTTP(getRec, getReq)
+
+	if headRec.Code != http.StatusOK || getRec.Code != http.StatusOK {
+		t.Fatalf("blob statuses HEAD=%d GET=%d, want both 200", headRec.Code, getRec.Code)
+	}
+	if headRec.Body.Len() != 0 {
+		t.Fatalf("HEAD blob body length = %d, want 0", headRec.Body.Len())
+	}
+	if !bytes.Equal(getRec.Body.Bytes(), blobData) {
+		t.Fatalf("blob body = %q, want %q", getRec.Body.Bytes(), blobData)
+	}
+	for _, name := range []string{"Content-Length", "Docker-Content-Digest"} {
+		if headRec.Header().Get(name) != getRec.Header().Get(name) {
+			t.Fatalf("blob %s HEAD=%q GET=%q", name, headRec.Header().Get(name), getRec.Header().Get(name))
+		}
 	}
 }
 
