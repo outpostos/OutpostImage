@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 
 	"github.com/outpostos/outpostimage/pkg/httpx"
 	"github.com/outpostos/outpostimage/pkg/oci"
+	"github.com/outpostos/outpostimage/pkg/proxy"
 	"github.com/outpostos/outpostimage/pkg/registry"
 	"github.com/outpostos/outpostimage/pkg/routing"
 	"github.com/outpostos/outpostimage/pkg/state"
@@ -622,6 +624,88 @@ func TestRegistryEndpointP2PRoutingIntegration(t *testing.T) {
 
 	if upstreamHits != 0 {
 		t.Fatalf("upstream hits=%d, want 0 for P2P registry path", upstreamHits)
+	}
+}
+
+func TestPeerFetchHeaderPreventsTwoNodeRecursion(t *testing.T) {
+	ctx := context.Background()
+
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer upstream.Close()
+
+	var node1, node2 *testNode
+	node1Hits := 0
+	node2Hits := 0
+
+	node1Handler := func(w http.ResponseWriter, r *http.Request) {
+		node1Hits++
+		if node1 == nil {
+			http.Error(w, "node1 not ready", http.StatusServiceUnavailable)
+			return
+		}
+		node1.server.Handler.ServeHTTP(w, r)
+	}
+	node2Handler := func(w http.ResponseWriter, r *http.Request) {
+		node2Hits++
+		if node2 == nil {
+			http.Error(w, "node2 not ready", http.StatusServiceUnavailable)
+			return
+		}
+		node2.server.Handler.ServeHTTP(w, r)
+	}
+
+	node1Front := httptest.NewServer(http.HandlerFunc(node1Handler))
+	defer node1Front.Close()
+	node2Front := httptest.NewServer(http.HandlerFunc(node2Handler))
+	defer node2Front.Close()
+
+	node1Peer := strings.TrimPrefix(node1Front.URL, "http://")
+	node2Peer := strings.TrimPrefix(node2Front.URL, "http://")
+
+	node1Router := routing.NewStaticRouter(routing.NewPeerWatcher([]string{node2Peer}))
+	node2Router := routing.NewStaticRouter(routing.NewPeerWatcher([]string{node1Peer}))
+
+	node1 = startRoutedTestNodeWithStore(t, "loop-node-1", newMockStore("loop-store-1"), node1Router, true, upstream.URL)
+	defer node1.stop()
+	node2 = startRoutedTestNodeWithStore(t, "loop-node-2", newMockStore("loop-store-2"), node2Router, true, upstream.URL)
+	defer node2.stop()
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		fmt.Sprintf("http://%s/v2/rancher/mirrored-pause/manifests/3.6", node1.addr),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(proxy.PeerFetchHeader, proxy.PeerFetchValue)
+
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("peer-fetch manifest request failed: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	elapsed := time.Since(start)
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+	if elapsed >= 500*time.Millisecond {
+		t.Fatalf("peer-fetch miss took %v, want under 500ms", elapsed)
+	}
+	if node1Hits != 0 || node2Hits != 0 {
+		t.Fatalf("peer recursion hits: node1=%d node2=%d, want both 0", node1Hits, node2Hits)
+	}
+	if upstreamHits != 0 {
+		t.Fatalf("upstream hits = %d, want 0", upstreamHits)
 	}
 }
 

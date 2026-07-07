@@ -13,6 +13,7 @@ import (
 	"github.com/opencontainers/go-digest"
 
 	"github.com/outpostos/outpostimage/pkg/oci"
+	"github.com/outpostos/outpostimage/pkg/proxy"
 	"github.com/outpostos/outpostimage/pkg/routing"
 )
 
@@ -360,6 +361,63 @@ func TestRegistryFallback_UpstreamDisabledReturns404(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("blob status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestRegistryPeerFetchMissDoesNotRoute(t *testing.T) {
+	peerHits := 0
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		peerHits++
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer peer.Close()
+
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"schemaVersion":2}`))
+	}))
+	defer upstream.Close()
+
+	pw := routing.NewPeerWatcher([]string{peer.Listener.Addr().String()})
+	router := routing.NewStaticRouter(pw)
+	mux := newRegistryFallbackMux(
+		newEmptyOCITestStore(),
+		WithRouter(router),
+		WithUpstreamRegistry(upstream.URL),
+		WithMetrics(nil),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/missing/manifests/latest", nil)
+	req.Header.Set(proxy.PeerFetchHeader, proxy.PeerFetchValue)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("manifest status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+	if peerHits != 0 {
+		t.Fatalf("peer hits = %d, want 0", peerHits)
+	}
+	if upstreamHits != 0 {
+		t.Fatalf("upstream hits = %d, want 0", upstreamHits)
+	}
+
+	fakeDigest := "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	req = httptest.NewRequest(http.MethodGet, "/v2/library/missing/blobs/"+fakeDigest, nil)
+	req.Header.Set(proxy.PeerFetchHeader, proxy.PeerFetchValue)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("blob status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+	if peerHits != 0 {
+		t.Fatalf("peer hits after blob = %d, want 0", peerHits)
+	}
+	if upstreamHits != 0 {
+		t.Fatalf("upstream hits after blob = %d, want 0", upstreamHits)
 	}
 }
 

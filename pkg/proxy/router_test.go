@@ -18,12 +18,16 @@ type routerMockStore struct {
 	images []oci.Image
 }
 
-func (m *routerMockStore) Name() string                                                        { return "mock" }
-func (m *routerMockStore) ListImages(_ context.Context) ([]oci.Image, error)                   { return m.images, nil }
-func (m *routerMockStore) Resolve(_ context.Context, _ string) (digest.Digest, error)          { return "", nil }
-func (m *routerMockStore) GetManifest(_ context.Context, _ digest.Digest) ([]byte, string, error) { return nil, "", nil }
-func (m *routerMockStore) GetBlob(_ context.Context, _ digest.Digest) (io.ReadCloser, int64, error) { return nil, 0, nil }
-func (m *routerMockStore) HasBlob(_ context.Context, _ digest.Digest) bool                    { return false }
+func (m *routerMockStore) Name() string                                               { return "mock" }
+func (m *routerMockStore) ListImages(_ context.Context) ([]oci.Image, error)          { return m.images, nil }
+func (m *routerMockStore) Resolve(_ context.Context, _ string) (digest.Digest, error) { return "", nil }
+func (m *routerMockStore) GetManifest(_ context.Context, _ digest.Digest) ([]byte, string, error) {
+	return nil, "", nil
+}
+func (m *routerMockStore) GetBlob(_ context.Context, _ digest.Digest) (io.ReadCloser, int64, error) {
+	return nil, 0, nil
+}
+func (m *routerMockStore) HasBlob(_ context.Context, _ digest.Digest) bool { return false }
 func (m *routerMockStore) Subscribe(_ context.Context) (<-chan oci.Event, error) {
 	return make(chan oci.Event), nil
 }
@@ -98,5 +102,32 @@ func TestRequestRouter_ManifestUpstream(t *testing.T) {
 	handled := interceptor(rec, req)
 	if handled {
 		t.Fatal("expected manifest request to forward to upstream for now")
+	}
+}
+
+func TestFetchFromPeerSetsPeerFetchHeader(t *testing.T) {
+	var gotHeader string
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get(PeerFetchHeader)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("manifest"))
+	}))
+	defer peer.Close()
+
+	resp, err := FetchFromPeer(
+		context.Background(),
+		peer.Listener.Addr().String(),
+		http.MethodGet,
+		"/v2/library/nginx/manifests/latest",
+		nil,
+		"docker.io",
+	)
+	if err != nil {
+		t.Fatalf("FetchFromPeer() error = %v", err)
+	}
+	resp.Body.Close()
+
+	if gotHeader != PeerFetchValue {
+		t.Fatalf("%s = %q, want %q", PeerFetchHeader, gotHeader, PeerFetchValue)
 	}
 }

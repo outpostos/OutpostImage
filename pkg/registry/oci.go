@@ -136,6 +136,7 @@ func (h *OCIHandler) handleVersionCheck(w http.ResponseWriter, r *http.Request) 
 // handleGetManifest implements GET /v2/{name}/manifests/{reference}.
 func (h *OCIHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, name, reference string) {
 	ctx := r.Context()
+	peerFetch := isPeerFetch(r)
 
 	// If the reference is a digest, check the content-digest cache first.
 	// containerd fetches manifests by tag, then re-fetches by the
@@ -165,6 +166,11 @@ func (h *OCIHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, n
 		// Fall through: try the store directly with this digest
 		data, mediaType, err := h.store.GetManifest(ctx, contentDgst)
 		if err != nil {
+			if peerFetch {
+				h.recordRegistryRead("manifest", "miss")
+				writeOCIError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown to registry", contentDgst.String())
+				return
+			}
 			if h.routeManifestMiss(w, r, contentDgst.String()) {
 				return
 			}
@@ -198,6 +204,11 @@ func (h *OCIHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, n
 			dgst, err = h.store.Resolve(ctx, hostRef)
 		}
 		if err != nil {
+			if peerFetch {
+				h.recordRegistryRead("manifest", "miss")
+				writeOCIError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown to registry", ref)
+				return
+			}
 			if h.routeManifestMiss(w, r, ref) {
 				return
 			}
@@ -209,6 +220,11 @@ func (h *OCIHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, n
 
 	data, mediaType, err := h.store.GetManifest(ctx, dgst)
 	if err != nil {
+		if peerFetch {
+			h.recordRegistryRead("manifest", "miss")
+			writeOCIError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown to registry", dgst.String())
+			return
+		}
 		if h.routeManifestMiss(w, r, dgst.String()) {
 			return
 		}
@@ -308,6 +324,11 @@ func (h *OCIHandler) handleHeadBlob(w http.ResponseWriter, r *http.Request, dgst
 
 	reader, size, err := h.store.GetBlob(r.Context(), dgst)
 	if err != nil {
+		if isPeerFetch(r) {
+			h.recordRegistryRead("blob", "miss")
+			writeOCIError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob unknown to registry", dgst.String())
+			return
+		}
 		if h.routeBlobMiss(w, r, http.MethodHead, dgst) {
 			return
 		}
@@ -334,6 +355,11 @@ func (h *OCIHandler) handleGetBlob(w http.ResponseWriter, r *http.Request, dgstS
 
 	reader, size, err := h.store.GetBlob(r.Context(), dgst)
 	if err != nil {
+		if isPeerFetch(r) {
+			h.recordRegistryRead("blob", "miss")
+			writeOCIError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob unknown to registry", dgst.String())
+			return
+		}
 		if h.routeBlobMiss(w, r, http.MethodGet, dgst) {
 			return
 		}
@@ -431,6 +457,10 @@ func (h *OCIHandler) recordRegistryRead(reqType, source string) {
 	if h.metrics != nil {
 		h.metrics.RecordRouterRegistryRead(reqType, source)
 	}
+}
+
+func isPeerFetch(r *http.Request) bool {
+	return r.Header.Get(proxy.PeerFetchHeader) == proxy.PeerFetchValue
 }
 
 func originalRegistryHost(r *http.Request) string {

@@ -55,6 +55,10 @@ const (
 	RouteLocal    RouteSource = "local"
 	RouteP2P      RouteSource = "p2p"
 	RouteUpstream RouteSource = "upstream"
+
+	// PeerFetchHeader marks OCI requests that came from another OutpostImage peer.
+	PeerFetchHeader = "X-Outpostimage-Peer-Fetch"
+	PeerFetchValue  = "1"
 )
 
 // PeerFetchResponse is a successful response fetched from a registry peer or upstream.
@@ -89,6 +93,7 @@ func FetchFromPeer(ctx context.Context, addr, method, path string, headers http.
 	if origHost != "" {
 		req.Header.Set("X-Original-Registry", origHost)
 	}
+	req.Header.Set(PeerFetchHeader, PeerFetchValue)
 
 	resp, err := peerClient(scheme).Do(req)
 	if err != nil {
@@ -198,7 +203,7 @@ func RequestRouter(tracker *state.Tracker, localAddr string, router ...routing.R
 				}
 
 				// Tracker only indexes config digests; layer blobs need a direct check
-				if tryBlobFromLocal(r.Context(), localAddr, path) {
+				if tryBlobFromLocal(r.Context(), localAddr, path, false) {
 					slog.Info("routing blob to local (direct)", "source", RouteLocal, "path", path)
 					proxyToLocal(w, r, localAddr)
 					return true
@@ -208,7 +213,7 @@ func RequestRouter(tracker *state.Tracker, localAddr string, router ...routing.R
 				if p2pRouter != nil {
 					peers := HealthyPeersFromRouter(r.Context(), p2pRouter)
 					for _, peer := range peers {
-						if tryBlobFromLocal(r.Context(), peer, path) {
+						if tryBlobFromLocal(r.Context(), peer, path, true) {
 							slog.Info("routing blob to P2P", "source", RouteP2P, "path", path, "peer", peer)
 							proxyToLocal(w, r, peer)
 							return true
@@ -245,7 +250,7 @@ func RequestRouter(tracker *state.Tracker, localAddr string, router ...routing.R
 			}
 
 			// Try local registry first
-			if tryManifestFrom(r.Context(), w, localAddr, path, origHost) {
+			if tryManifestFrom(r.Context(), w, localAddr, path, origHost, false) {
 				slog.Info("manifest served from local", "source", RouteLocal, "path", path)
 				return true
 			}
@@ -254,7 +259,7 @@ func RequestRouter(tracker *state.Tracker, localAddr string, router ...routing.R
 			if p2pRouter != nil {
 				peers := HealthyPeersFromRouter(r.Context(), p2pRouter)
 				for _, peer := range peers {
-					if tryManifestFrom(r.Context(), w, peer, path, origHost) {
+					if tryManifestFrom(r.Context(), w, peer, path, origHost, true) {
 						slog.Info("manifest served from P2P", "source", RouteP2P, "path", path, "peer", peer)
 						return true
 					}
@@ -289,6 +294,7 @@ func headBlobSize(ctx context.Context, peer, path string) int64 {
 	if err != nil {
 		return 0
 	}
+	req.Header.Set(PeerFetchHeader, PeerFetchValue)
 	resp, err := peerClient(scheme).Do(req)
 	if err != nil {
 		return 0
@@ -306,12 +312,15 @@ func headBlobSize(ctx context.Context, peer, path string) int64 {
 
 // tryBlobFromLocal sends a HEAD request to check if a blob exists at the given addr.
 // addr may include a scheme prefix ("https://host:port") for HTTPS peers; defaults to HTTP.
-func tryBlobFromLocal(ctx context.Context, addr, path string) bool {
+func tryBlobFromLocal(ctx context.Context, addr, path string, peerFetch bool) bool {
 	scheme, hostport := peerSchemeAndAddr(addr)
 	url := scheme + "://" + hostport + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 	if err != nil {
 		return false
+	}
+	if peerFetch {
+		req.Header.Set(PeerFetchHeader, PeerFetchValue)
 	}
 	resp, err := peerClient(scheme).Do(req)
 	if err != nil {
@@ -326,7 +335,7 @@ func tryBlobFromLocal(ctx context.Context, addr, path string) bool {
 // On any failure or non-200, it returns false without touching w.
 // addr may include a scheme prefix ("https://host:port") for HTTPS peers; defaults to HTTP.
 // origHost is the original registry host (e.g., "ghcr.io") for tag resolution.
-func tryManifestFrom(ctx context.Context, w http.ResponseWriter, addr, path string, origHost string) bool {
+func tryManifestFrom(ctx context.Context, w http.ResponseWriter, addr, path string, origHost string, peerFetch bool) bool {
 	scheme, hostport := peerSchemeAndAddr(addr)
 	url := scheme + "://" + hostport + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -338,6 +347,9 @@ func tryManifestFrom(ctx context.Context, w http.ResponseWriter, addr, path stri
 	// stored with registry prefix (e.g., "ghcr.io/test/debian:latest")
 	if origHost != "" {
 		req.Header.Set("X-Original-Registry", origHost)
+	}
+	if peerFetch {
+		req.Header.Set(PeerFetchHeader, PeerFetchValue)
 	}
 	resp, err := peerClient(scheme).Do(req)
 	if err != nil {
