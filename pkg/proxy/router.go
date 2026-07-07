@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/opencontainers/go-digest"
@@ -52,9 +53,123 @@ type RouteSource string
 
 const (
 	RouteLocal    RouteSource = "local"
-	RouteP2P     RouteSource = "p2p"
+	RouteP2P      RouteSource = "p2p"
 	RouteUpstream RouteSource = "upstream"
 )
+
+// PeerFetchResponse is a successful response fetched from a registry peer or upstream.
+type PeerFetchResponse struct {
+	StatusCode    int
+	Header        http.Header
+	Body          io.ReadCloser
+	ContentLength int64
+}
+
+// FetchFromPeers tries healthy registry peers in router order and returns the first successful response.
+func FetchFromPeers(ctx context.Context, r routing.Router, method, path string, headers http.Header, origHost string) (*PeerFetchResponse, string, bool) {
+	for _, peer := range HealthyPeersFromRouter(ctx, r) {
+		resp, err := FetchFromPeer(ctx, peer, method, path, headers, origHost)
+		if err == nil {
+			return resp, peer, true
+		}
+		slog.Debug("peer fetch failed", "peer", peer, "method", method, "path", path, "error", err)
+	}
+	return nil, "", false
+}
+
+// FetchFromPeer fetches an OCI path from a single registry peer.
+func FetchFromPeer(ctx context.Context, addr, method, path string, headers http.Header, origHost string) (*PeerFetchResponse, error) {
+	scheme, hostport := peerSchemeAndAddr(addr)
+	targetURL := scheme + "://" + hostport + path
+	req, err := http.NewRequestWithContext(ctx, method, targetURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	copyHeaders(req.Header, headers)
+	if origHost != "" {
+		req.Header.Set("X-Original-Registry", origHost)
+	}
+
+	resp, err := peerClient(scheme).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		resp.Body.Close()
+		return nil, fmt.Errorf("non-success status %d", resp.StatusCode)
+	}
+
+	return &PeerFetchResponse{
+		StatusCode:    resp.StatusCode,
+		Header:        resp.Header.Clone(),
+		Body:          resp.Body,
+		ContentLength: resp.ContentLength,
+	}, nil
+}
+
+// FetchFromUpstream fetches an OCI path from the original registry.
+// The registry is read from X-Upstream-Registry or X-Original-Registry, then falls back to defaultRegistry.
+func FetchFromUpstream(ctx context.Context, r *http.Request, method, defaultRegistry string) (*PeerFetchResponse, error) {
+	rawRegistry := r.Header.Get("X-Upstream-Registry")
+	if rawRegistry == "" {
+		rawRegistry = r.Header.Get("X-Original-Registry")
+	}
+	if rawRegistry == "" && r.URL.IsAbs() && r.URL.Host != "" {
+		rawRegistry = r.URL.Host
+	}
+	if rawRegistry == "" {
+		rawRegistry = defaultRegistry
+	}
+
+	base, err := upstreamBaseURL(rawRegistry)
+	if err != nil {
+		return nil, err
+	}
+	targetURL := strings.TrimRight(base, "/") + r.URL.RequestURI()
+	req, err := http.NewRequestWithContext(ctx, method, targetURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	copyHeaders(req.Header, r.Header)
+	req.Header.Del("X-Upstream-Registry")
+	req.Header.Del("X-Original-Registry")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	return &PeerFetchResponse{
+		StatusCode:    resp.StatusCode,
+		Header:        resp.Header.Clone(),
+		Body:          resp.Body,
+		ContentLength: resp.ContentLength,
+	}, nil
+}
+
+func upstreamBaseURL(raw string) (string, error) {
+	if raw == "" {
+		return "", fmt.Errorf("empty upstream registry")
+	}
+	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return "", err
+		}
+		if u.Host == "" {
+			return "", fmt.Errorf("invalid upstream registry %q", raw)
+		}
+		u.Path = ""
+		u.RawQuery = ""
+		u.Fragment = ""
+		return u.String(), nil
+	}
+
+	if raw == "docker.io" || raw == "index.docker.io" {
+		raw = "registry-1.docker.io"
+	}
+	return "https://" + raw, nil
+}
 
 // RequestRouter examines OCI requests and decides whether to serve them
 // locally, from P2P peers, or forward to upstream.
@@ -91,7 +206,7 @@ func RequestRouter(tracker *state.Tracker, localAddr string, router ...routing.R
 
 				// Try P2P peers
 				if p2pRouter != nil {
-					peers := healthyPeersFromRouter(r.Context(), p2pRouter)
+					peers := HealthyPeersFromRouter(r.Context(), p2pRouter)
 					for _, peer := range peers {
 						if tryBlobFromLocal(r.Context(), peer, path) {
 							slog.Info("routing blob to P2P", "source", RouteP2P, "path", path, "peer", peer)
@@ -137,7 +252,7 @@ func RequestRouter(tracker *state.Tracker, localAddr string, router ...routing.R
 
 			// Try P2P peers
 			if p2pRouter != nil {
-				peers := healthyPeersFromRouter(r.Context(), p2pRouter)
+				peers := HealthyPeersFromRouter(r.Context(), p2pRouter)
 				for _, peer := range peers {
 					if tryManifestFrom(r.Context(), w, peer, path, origHost) {
 						slog.Info("manifest served from P2P", "source", RouteP2P, "path", path, "peer", peer)
@@ -243,9 +358,9 @@ func tryManifestFrom(ctx context.Context, w http.ResponseWriter, addr, path stri
 	return true
 }
 
-// healthyPeersFromRouter extracts healthy peers from a Router.
+// HealthyPeersFromRouter extracts healthy peers from a Router.
 // For StaticRouter, it directly accesses the healthy peer list.
-func healthyPeersFromRouter(ctx context.Context, r routing.Router) []string {
+func HealthyPeersFromRouter(ctx context.Context, r routing.Router) []string {
 	if sr, ok := r.(*routing.StaticRouter); ok {
 		return sr.HealthyPeers()
 	}

@@ -28,23 +28,24 @@ var version = "dev"
 
 // RegistryCmd is the main subcommand that runs the OutpostImage service.
 type RegistryCmd struct {
-	RegistryAddr   string   `arg:"--registry-addr,env:REGISTRY_ADDR" default:":5000" help:"P2P Registry API listen address"`
-	ProxyAddr      string   `arg:"--proxy-addr,env:PROXY_ADDR" default:":3128" help:"HTTP Proxy listen address"`
-	MetricsAddr    string   `arg:"--metrics-addr,env:METRICS_ADDR" default:":9090" help:"Metrics listen address"`
-	DockerRoot     string   `arg:"--docker-root,env:DOCKER_ROOT" default:"/var/lib/docker" help:"Docker storage root directory"`
-	ContainerdRoot string   `arg:"--containerd-root,env:CONTAINERD_ROOT" default:"/var/lib/containerd" help:"Containerd storage root directory"`
-	StoreType      string   `arg:"--store-type,env:STORE_TYPE" default:"auto" help:"Store type: auto, docker, containerd"`
-	Peers          []string `arg:"--peers,env:PEERS,separate" help:"Static peer list (host:port)"`
-	PeersFile      string   `arg:"--peers-file,env:PEERS_FILE" help:"Path to peers file for hot-reload"`
-	MDNSEnabled    bool     `arg:"--mdns-enabled,env:MDNS_ENABLED" default:"true" help:"Enable mDNS peer discovery"`
-	MDNSInterface  string   `arg:"--mdns-interface,env:MDNS_INTERFACE" help:"Network interface for mDNS"`
-	MDNSDomain     string   `arg:"--mdns-domain,env:MDNS_DOMAIN" default:"local" help:"mDNS domain"`
-	K8sDiscovery   bool     `arg:"--k8s-discovery,env:K8S_DISCOVERY" default:"false" help:"Enable Kubernetes Endpoints peer discovery"`
-	K8sServiceName string   `arg:"--k8s-service-name,env:K8S_SERVICE_NAME" default:"outpostimage" help:"Kubernetes Service name for peer discovery"`
-	K8sNamespace   string   `arg:"--k8s-namespace,env:K8S_NAMESPACE" help:"Kubernetes namespace (auto-detected if empty)"`
-	LogLevel       string   `arg:"--log-level,env:LOG_LEVEL" default:"INFO" help:"Log level (DEBUG, INFO, WARN, ERROR)"`
-	CADir              string   `arg:"--ca-dir,env:CA_DIR" default:"/etc/outpostimage" help:"Directory for CA certificate and key"`
-	InsecureRegistries []string `arg:"--insecure-registry,env:INSECURE_REGISTRIES,separate" help:"Registries to connect without TLS verification (host:port or host)"`
+	RegistryAddr             string   `arg:"--registry-addr,env:REGISTRY_ADDR" default:":5000" help:"P2P Registry API listen address"`
+	ProxyAddr                string   `arg:"--proxy-addr,env:PROXY_ADDR" default:":3128" help:"HTTP Proxy listen address"`
+	MetricsAddr              string   `arg:"--metrics-addr,env:METRICS_ADDR" default:":9090" help:"Metrics listen address"`
+	DockerRoot               string   `arg:"--docker-root,env:DOCKER_ROOT" default:"/var/lib/docker" help:"Docker storage root directory"`
+	ContainerdRoot           string   `arg:"--containerd-root,env:CONTAINERD_ROOT" default:"/var/lib/containerd" help:"Containerd storage root directory"`
+	StoreType                string   `arg:"--store-type,env:STORE_TYPE" default:"auto" help:"Store type: auto, docker, containerd"`
+	Peers                    []string `arg:"--peers,env:PEERS,separate" help:"Static peer list (host:port)"`
+	PeersFile                string   `arg:"--peers-file,env:PEERS_FILE" help:"Path to peers file for hot-reload"`
+	MDNSEnabled              bool     `arg:"--mdns-enabled,env:MDNS_ENABLED" default:"true" help:"Enable mDNS peer discovery"`
+	MDNSInterface            string   `arg:"--mdns-interface,env:MDNS_INTERFACE" help:"Network interface for mDNS"`
+	MDNSDomain               string   `arg:"--mdns-domain,env:MDNS_DOMAIN" default:"local" help:"mDNS domain"`
+	K8sDiscovery             bool     `arg:"--k8s-discovery,env:K8S_DISCOVERY" default:"false" help:"Enable Kubernetes Endpoints peer discovery"`
+	K8sServiceName           string   `arg:"--k8s-service-name,env:K8S_SERVICE_NAME" default:"outpostimage" help:"Kubernetes Service name for peer discovery"`
+	K8sNamespace             string   `arg:"--k8s-namespace,env:K8S_NAMESPACE" help:"Kubernetes namespace (auto-detected if empty)"`
+	LogLevel                 string   `arg:"--log-level,env:LOG_LEVEL" default:"INFO" help:"Log level (DEBUG, INFO, WARN, ERROR)"`
+	CADir                    string   `arg:"--ca-dir,env:CA_DIR" default:"/etc/outpostimage" help:"Directory for CA certificate and key"`
+	InsecureRegistries       []string `arg:"--insecure-registry,env:INSECURE_REGISTRIES,separate" help:"Registries to connect without TLS verification (host:port or host)"`
+	RegistryUpstreamFallback bool     `arg:"--registry-upstream-fallback,env:REGISTRY_UPSTREAM_FALLBACK" default:"true" help:"Allow registry endpoint to fall back to upstream after local and P2P miss"`
 }
 
 // Args holds the top-level CLI arguments with subcommands.
@@ -90,6 +91,7 @@ func run(cmd *RegistryCmd) error {
 		"containerd_root", cmd.ContainerdRoot,
 		"peers", cmd.Peers,
 		"peers_file", cmd.PeersFile,
+		"registry_upstream_fallback", cmd.RegistryUpstreamFallback,
 		"log_level", cmd.LogLevel,
 	)
 
@@ -170,7 +172,12 @@ func run(cmd *RegistryCmd) error {
 	registryMux.HandleFunc("GET /healthz", httpx.HandleHealthz())
 	registryMux.HandleFunc("GET /readyz", httpx.HandleReadyz())
 
-	ociHandler := registry.NewOCIHandler(store)
+	ociHandler := registry.NewOCIHandler(
+		store,
+		registry.WithRouter(router),
+		registry.WithUpstreamFallback(cmd.RegistryUpstreamFallback),
+		registry.WithMetrics(metrics.Default),
+	)
 	ociHandler.RegisterRoutes(registryMux)
 
 	digestHandler := registry.NewDigestHandler(tracker)
