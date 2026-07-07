@@ -43,8 +43,8 @@ func (cs *ContainerdStore) metaDBPath() string {
 // NewContainerdStore creates a new ContainerdStore rooted at the given containerd storage path.
 func NewContainerdStore(root string) *ContainerdStore {
 	return &ContainerdStore{
-		root: root,
-		tags: make(map[string]digest.Digest),
+		root:  root,
+		tags:  make(map[string]digest.Digest),
 		blobs: make(map[digest.Digest]string),
 	}
 }
@@ -90,48 +90,67 @@ func (cs *ContainerdStore) Resolve(_ context.Context, ref string) (digest.Digest
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
 
-	// Exact match
-	if d, ok := cs.tags[ref]; ok {
-		return d, nil
-	}
-
-	parts := strings.SplitN(ref, ":", 2)
-	if len(parts) != 2 {
+	candidates, err := containerdTagCandidates(ref)
+	if err != nil {
 		return "", fmt.Errorf("reference not found: %s", ref)
 	}
-	name, tag := parts[0], parts[1]
-
-	// Try with docker.io/ prefix (containerd's canonical form)
-	if !strings.Contains(name, ".") && !strings.Contains(name, "/") {
-		// bare name like "redis" → try docker.io/library/redis
-		candidate := "docker.io/library/" + name + ":" + tag
+	for _, candidate := range candidates {
 		if d, ok := cs.tags[candidate]; ok {
-			return d, nil
-		}
-	}
-
-	// library/redis → docker.io/library/redis
-	if strings.HasPrefix(name, "library/") {
-		candidate := "docker.io/" + name + ":" + tag
-		if d, ok := cs.tags[candidate]; ok {
-			return d, nil
-		}
-		// Also try without library/ prefix
-		short := strings.TrimPrefix(name, "library/") + ":" + tag
-		if d, ok := cs.tags[short]; ok {
-			return d, nil
-		}
-	}
-
-	// docker.io/library/redis → try without docker.io/ prefix
-	if strings.HasPrefix(name, "docker.io/") {
-		short := strings.TrimPrefix(name, "docker.io/") + ":" + tag
-		if d, ok := cs.tags[short]; ok {
 			return d, nil
 		}
 	}
 
 	return "", fmt.Errorf("reference not found: %s", ref)
+}
+
+func containerdTagCandidates(ref string) ([]string, error) {
+	parts := strings.SplitN(ref, ":", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return nil, fmt.Errorf("invalid reference")
+	}
+	name, tag := parts[0], parts[1]
+
+	seen := make(map[string]struct{})
+	candidates := make([]string, 0, 6)
+	add := func(name string) {
+		candidate := name + ":" + tag
+		if _, ok := seen[candidate]; ok {
+			return
+		}
+		seen[candidate] = struct{}{}
+		candidates = append(candidates, candidate)
+	}
+
+	add(name)
+
+	if strings.HasPrefix(name, "docker.io/") {
+		withoutRegistry := strings.TrimPrefix(name, "docker.io/")
+		add(withoutRegistry)
+		if strings.HasPrefix(withoutRegistry, "library/") {
+			add(strings.TrimPrefix(withoutRegistry, "library/"))
+		}
+		return candidates, nil
+	}
+
+	if !hasRegistryHost(name) {
+		add("docker.io/" + name)
+		if !strings.Contains(name, "/") {
+			add("docker.io/library/" + name)
+		}
+		if strings.HasPrefix(name, "library/") {
+			add(strings.TrimPrefix(name, "library/"))
+		}
+	}
+
+	return candidates, nil
+}
+
+func hasRegistryHost(name string) bool {
+	first, _, hasSlash := strings.Cut(name, "/")
+	if !hasSlash {
+		return false
+	}
+	return strings.Contains(first, ".") || strings.Contains(first, ":") || first == "localhost"
 }
 
 // GetManifest returns the manifest bytes and media type for the given digest.

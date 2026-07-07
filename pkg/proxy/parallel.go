@@ -155,6 +155,7 @@ func (pf *ParallelFetcher) fetchSingle(ctx context.Context, peer, blobPath strin
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set(PeerFetchHeader, PeerFetchValue)
 
 	resp, err := pf.client.Do(req)
 	if err != nil {
@@ -177,6 +178,7 @@ func (pf *ParallelFetcher) fetchChunk(ctx context.Context, peer, blobPath string
 		return nil, err
 	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+	req.Header.Set(PeerFetchHeader, PeerFetchValue)
 
 	resp, err := pf.client.Do(req)
 	if err != nil {

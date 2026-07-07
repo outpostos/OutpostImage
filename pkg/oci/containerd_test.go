@@ -158,6 +158,45 @@ func TestContainerdStore_GetManifest(t *testing.T) {
 	}
 }
 
+func TestContainerdStore_ResolveDockerIONamespaces(t *testing.T) {
+	pauseDigest := digest.FromBytes([]byte("pause manifest"))
+	multiLevelDigest := digest.FromBytes([]byte("multi-level manifest"))
+
+	store := NewContainerdStore(t.TempDir())
+	store.tags["docker.io/rancher/mirrored-pause:3.6"] = pauseDigest
+	store.tags["docker.io/acme/team/image:1.0"] = multiLevelDigest
+
+	tests := []struct {
+		ref  string
+		want digest.Digest
+	}{
+		{
+			ref:  "rancher/mirrored-pause:3.6",
+			want: pauseDigest,
+		},
+		{
+			ref:  "docker.io/rancher/mirrored-pause:3.6",
+			want: pauseDigest,
+		},
+		{
+			ref:  "acme/team/image:1.0",
+			want: multiLevelDigest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ref, func(t *testing.T) {
+			got, err := store.Resolve(context.Background(), tt.ref)
+			if err != nil {
+				t.Fatalf("Resolve(%q) error = %v", tt.ref, err)
+			}
+			if got != tt.want {
+				t.Fatalf("Resolve(%q) = %s, want %s", tt.ref, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestContainerdStore_Subscribe(t *testing.T) {
 	store, root := setupContainerdTestStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
