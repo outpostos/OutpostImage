@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,7 +12,10 @@ import (
 
 	"github.com/opencontainers/go-digest"
 
+	"github.com/outpostos/outpostimage/pkg/metrics"
 	"github.com/outpostos/outpostimage/pkg/oci"
+	"github.com/outpostos/outpostimage/pkg/proxy"
+	"github.com/outpostos/outpostimage/pkg/routing"
 )
 
 // manifestEntry caches a served manifest by its content digest.
@@ -22,7 +26,11 @@ type manifestEntry struct {
 
 // OCIHandler implements the OCI Distribution Spec v2 endpoints.
 type OCIHandler struct {
-	store oci.Store
+	store            oci.Store
+	router           routing.Router
+	upstreamFallback bool
+	upstreamRegistry string
+	metrics          *metrics.Metrics
 
 	// manifestCache maps content-digest → manifest bytes+mediaType.
 	// containerd fetches a manifest by tag, then re-fetches by the
@@ -32,12 +40,50 @@ type OCIHandler struct {
 	manifestCache map[digest.Digest]manifestEntry
 }
 
-// NewOCIHandler creates a new OCIHandler backed by the given store.
-func NewOCIHandler(store oci.Store) *OCIHandler {
-	return &OCIHandler{
-		store:         store,
-		manifestCache: make(map[digest.Digest]manifestEntry),
+// Option configures OCIHandler behavior.
+type Option func(*OCIHandler)
+
+// WithRouter enables local miss routing through P2P peers.
+func WithRouter(router routing.Router) Option {
+	return func(h *OCIHandler) {
+		h.router = router
 	}
+}
+
+// WithUpstreamFallback controls whether registry misses fall back to upstream.
+func WithUpstreamFallback(enabled bool) Option {
+	return func(h *OCIHandler) {
+		h.upstreamFallback = enabled
+	}
+}
+
+// WithUpstreamRegistry sets the default upstream registry used when a request does not identify one.
+func WithUpstreamRegistry(registry string) Option {
+	return func(h *OCIHandler) {
+		h.upstreamRegistry = registry
+	}
+}
+
+// WithMetrics sets the metrics registry used for routed registry reads.
+func WithMetrics(m *metrics.Metrics) Option {
+	return func(h *OCIHandler) {
+		h.metrics = m
+	}
+}
+
+// NewOCIHandler creates a new OCIHandler backed by the given store.
+func NewOCIHandler(store oci.Store, opts ...Option) *OCIHandler {
+	h := &OCIHandler{
+		store:            store,
+		upstreamFallback: true,
+		upstreamRegistry: "registry-1.docker.io",
+		metrics:          metrics.Default,
+		manifestCache:    make(map[digest.Digest]manifestEntry),
+	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // RegisterRoutes registers the OCI Distribution API routes on the given mux.
@@ -110,13 +156,19 @@ func (h *OCIHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, n
 			w.Header().Set("Content-Length", strconv.Itoa(len(cached.data)))
 			w.Header().Set("Docker-Content-Digest", contentDgst.String())
 			w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
-			_, _ = w.Write(cached.data)
+			if r.Method != http.MethodHead {
+				_, _ = w.Write(cached.data)
+			}
 			return
 		}
 
 		// Fall through: try the store directly with this digest
 		data, mediaType, err := h.store.GetManifest(ctx, contentDgst)
 		if err != nil {
+			if h.routeManifestMiss(w, r, contentDgst.String()) {
+				return
+			}
+			h.recordRegistryRead("manifest", "miss")
 			writeOCIError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown to registry", contentDgst.String())
 			return
 		}
@@ -125,7 +177,9 @@ func (h *OCIHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, n
 		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 		w.Header().Set("Docker-Content-Digest", actualDigest.String())
 		w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
-		_, _ = w.Write(data)
+		if r.Method != http.MethodHead {
+			_, _ = w.Write(data)
+		}
 		return
 	}
 
@@ -144,6 +198,10 @@ func (h *OCIHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, n
 			dgst, err = h.store.Resolve(ctx, hostRef)
 		}
 		if err != nil {
+			if h.routeManifestMiss(w, r, ref) {
+				return
+			}
+			h.recordRegistryRead("manifest", "miss")
 			writeOCIError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown to registry", ref)
 			return
 		}
@@ -151,6 +209,10 @@ func (h *OCIHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, n
 
 	data, mediaType, err := h.store.GetManifest(ctx, dgst)
 	if err != nil {
+		if h.routeManifestMiss(w, r, dgst.String()) {
+			return
+		}
+		h.recordRegistryRead("manifest", "miss")
 		writeOCIError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown to registry", dgst.String())
 		return
 	}
@@ -168,7 +230,72 @@ func (h *OCIHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, n
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.Header().Set("Docker-Content-Digest", contentDigest.String())
 	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
-	_, _ = w.Write(data)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(data)
+	}
+}
+
+func (h *OCIHandler) routeManifestMiss(w http.ResponseWriter, r *http.Request, detail string) bool {
+	origHost := originalRegistryHost(r)
+	if h.router != nil {
+		resp, peer, ok := proxy.FetchFromPeers(r.Context(), h.router, http.MethodGet, r.URL.RequestURI(), r.Header, origHost)
+		if ok {
+			defer resp.Body.Close()
+			if h.serveFetchedManifest(w, r, resp) {
+				h.recordRegistryRead("manifest", "p2p")
+				slog.Info("registry manifest served from P2P", "path", r.URL.Path, "peer", peer)
+				return true
+			}
+		}
+	}
+
+	if !h.upstreamFallback {
+		slog.Debug("registry upstream fallback disabled", "path", r.URL.Path, "detail", detail)
+		return false
+	}
+
+	resp, err := proxy.FetchFromUpstream(r.Context(), r, http.MethodGet, h.upstreamRegistry)
+	if err != nil {
+		slog.Debug("registry upstream manifest fetch failed", "path", r.URL.Path, "error", err)
+		return false
+	}
+	defer resp.Body.Close()
+	h.recordRegistryRead("manifest", "upstream")
+	if resp.StatusCode != http.StatusOK {
+		copyResponseHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		if r.Method != http.MethodHead {
+			_, _ = io.Copy(w, resp.Body)
+		}
+		return true
+	}
+	return h.serveFetchedManifest(w, r, resp)
+}
+
+func (h *OCIHandler) serveFetchedManifest(w http.ResponseWriter, r *http.Request, resp *proxy.PeerFetchResponse) bool {
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		slog.Debug("registry manifest fetch read failed", "path", r.URL.Path, "error", err)
+		return false
+	}
+	mediaType := resp.Header.Get("Content-Type")
+	if mediaType == "" {
+		mediaType = "application/vnd.docker.distribution.manifest.v2+json"
+	}
+	contentDigest := digest.FromBytes(data)
+
+	h.mu.Lock()
+	h.manifestCache[contentDigest] = manifestEntry{data: data, mediaType: mediaType}
+	h.mu.Unlock()
+
+	w.Header().Set("Content-Type", mediaType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("Docker-Content-Digest", contentDigest.String())
+	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(data)
+	}
+	return true
 }
 
 // handleHeadBlob implements HEAD /v2/{name}/blobs/{digest}.
@@ -181,6 +308,10 @@ func (h *OCIHandler) handleHeadBlob(w http.ResponseWriter, r *http.Request, dgst
 
 	reader, size, err := h.store.GetBlob(r.Context(), dgst)
 	if err != nil {
+		if h.routeBlobMiss(w, r, http.MethodHead, dgst) {
+			return
+		}
+		h.recordRegistryRead("blob", "miss")
 		writeOCIError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob unknown to registry", dgst.String())
 		return
 	}
@@ -203,6 +334,10 @@ func (h *OCIHandler) handleGetBlob(w http.ResponseWriter, r *http.Request, dgstS
 
 	reader, size, err := h.store.GetBlob(r.Context(), dgst)
 	if err != nil {
+		if h.routeBlobMiss(w, r, http.MethodGet, dgst) {
+			return
+		}
+		h.recordRegistryRead("blob", "miss")
 		writeOCIError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob unknown to registry", dgst.String())
 		return
 	}
@@ -241,6 +376,88 @@ func (h *OCIHandler) handleGetBlob(w http.ResponseWriter, r *http.Request, dgstS
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", size))
 	_, _ = io.Copy(w, reader)
+}
+
+func (h *OCIHandler) routeBlobMiss(w http.ResponseWriter, r *http.Request, method string, dgst digest.Digest) bool {
+	origHost := originalRegistryHost(r)
+	if h.router != nil {
+		resp, peer, ok := proxy.FetchFromPeers(r.Context(), h.router, method, r.URL.RequestURI(), r.Header, origHost)
+		if ok {
+			defer resp.Body.Close()
+			h.recordRegistryRead("blob", "p2p")
+			slog.Info("registry blob served from P2P", "path", r.URL.Path, "peer", peer)
+			serveFetchedBlob(w, r, resp, dgst)
+			return true
+		}
+	}
+
+	if !h.upstreamFallback {
+		slog.Debug("registry upstream fallback disabled", "path", r.URL.Path, "digest", dgst)
+		return false
+	}
+
+	resp, err := proxy.FetchFromUpstream(r.Context(), r, method, h.upstreamRegistry)
+	if err != nil {
+		slog.Debug("registry upstream blob fetch failed", "path", r.URL.Path, "error", err)
+		return false
+	}
+	defer resp.Body.Close()
+	h.recordRegistryRead("blob", "upstream")
+	serveFetchedBlob(w, r, resp, dgst)
+	return true
+}
+
+func serveFetchedBlob(w http.ResponseWriter, r *http.Request, resp *proxy.PeerFetchResponse, dgst digest.Digest) {
+	copyResponseHeaders(w.Header(), resp.Header)
+	if w.Header().Get("Docker-Content-Digest") == "" && dgst != "" {
+		w.Header().Set("Docker-Content-Digest", dgst.String())
+	}
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+	if w.Header().Get("Accept-Ranges") == "" {
+		w.Header().Set("Accept-Ranges", "bytes")
+	}
+	if resp.ContentLength >= 0 && w.Header().Get("Content-Length") == "" {
+		w.Header().Set("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
+	}
+	w.WriteHeader(resp.StatusCode)
+	if r.Method != http.MethodHead {
+		_, _ = io.Copy(w, resp.Body)
+	}
+}
+
+func (h *OCIHandler) recordRegistryRead(reqType, source string) {
+	if h.metrics != nil {
+		h.metrics.RecordRouterRegistryRead(reqType, source)
+	}
+}
+
+func originalRegistryHost(r *http.Request) string {
+	if host := r.Header.Get("X-Original-Registry"); host != "" {
+		return host
+	}
+	if host := r.Header.Get("X-Upstream-Registry"); host != "" {
+		return host
+	}
+	if r.URL.IsAbs() && r.URL.Host != "" {
+		return r.URL.Host
+	}
+	return r.Host
+}
+
+func copyResponseHeaders(dst, src http.Header) {
+	for k, vv := range src {
+		switch strings.ToLower(k) {
+		case "connection", "proxy-connection", "keep-alive",
+			"proxy-authenticate", "proxy-authorization",
+			"te", "trailer", "transfer-encoding", "upgrade":
+			continue
+		}
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
+	}
 }
 
 // parseRangeHeader parses a Range header value like "bytes=0-1023" or "bytes=1024-".

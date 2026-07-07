@@ -12,24 +12,25 @@ import (
 // Metrics holds all Prometheus metrics for OutpostImage.
 type Metrics struct {
 	// HTTP request metrics
-	HTTPRequestsTotal    *prometheus.CounterVec
-	HTTPRequestDuration  *prometheus.HistogramVec
-	HTTPResponsesTotal   *prometheus.CounterVec
+	HTTPRequestsTotal   *prometheus.CounterVec
+	HTTPRequestDuration *prometheus.HistogramVec
+	HTTPResponsesTotal  *prometheus.CounterVec
 
 	// P2P routing metrics
-	PeerHealthStatus        *prometheus.GaugeVec
-	RouterLookupsTotal      *prometheus.CounterVec
-	RouterLookupDuration    *prometheus.HistogramVec
-	RouterBalancerPeers     *prometheus.GaugeVec
+	PeerHealthStatus         *prometheus.GaugeVec
+	RouterLookupsTotal       *prometheus.CounterVec
+	RouterLookupDuration     *prometheus.HistogramVec
+	RouterBalancerPeers      *prometheus.GaugeVec
+	RouterRegistryReadsTotal *prometheus.CounterVec
 
 	// Storage metrics
-	StorageDigestsGauge     prometheus.Gauge
-	StorageImagesGauge      prometheus.Gauge
+	StorageDigestsGauge prometheus.Gauge
+	StorageImagesGauge  prometheus.Gauge
 
 	// Proxy metrics
-	ProxyRequestsTotal      *prometheus.CounterVec
-	ProxyInterceptedTotal   *prometheus.CounterVec
-	ProxyUpstreamTotal      *prometheus.CounterVec
+	ProxyRequestsTotal    *prometheus.CounterVec
+	ProxyInterceptedTotal *prometheus.CounterVec
+	ProxyUpstreamTotal    *prometheus.CounterVec
 
 	// mDNS metrics
 	MDNSPeersDiscoveredTotal prometheus.Counter
@@ -98,6 +99,13 @@ func New() *Metrics {
 			},
 			[]string{"digest"},
 		),
+		RouterRegistryReadsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "outpostimage_router_registry_reads_total",
+				Help: "Total number of registry read misses routed through P2P, upstream, or total miss.",
+			},
+			[]string{"type", "source"}, // manifest/blob, p2p/upstream/miss
+		),
 
 		// Storage metrics
 		StorageDigestsGauge: prometheus.NewGauge(
@@ -163,6 +171,7 @@ func New() *Metrics {
 		m.RouterLookupsTotal,
 		m.RouterLookupDuration,
 		m.RouterBalancerPeers,
+		m.RouterRegistryReadsTotal,
 		m.StorageDigestsGauge,
 		m.StorageImagesGauge,
 		m.ProxyRequestsTotal,
@@ -201,6 +210,11 @@ func (m *Metrics) SetPeerHealth(peer string, healthy bool) {
 func (m *Metrics) RecordRouterLookup(result string, duration time.Duration) {
 	m.RouterLookupsTotal.WithLabelValues(result).Inc()
 	m.RouterLookupDuration.WithLabelValues().Observe(duration.Seconds())
+}
+
+// RecordRouterRegistryRead records a registry read resolved after a local miss.
+func (m *Metrics) RecordRouterRegistryRead(reqType, source string) {
+	m.RouterRegistryReadsTotal.WithLabelValues(reqType, source).Inc()
 }
 
 // SetDigestCount sets the total digest count.

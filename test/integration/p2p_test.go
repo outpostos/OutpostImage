@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -131,6 +132,47 @@ func startTestNodeWithStore(t *testing.T, name string, store oci.Store) *testNod
 	return &testNode{
 		name:    name,
 		store:   nil, // not a mockStore
+		tracker: tracker,
+		addr:    addr,
+		server:  srv,
+	}
+}
+
+func startRoutedTestNodeWithStore(t *testing.T, name string, store oci.Store, router routing.Router, upstreamFallback bool, upstreamRegistry string) *testNode {
+	t.Helper()
+
+	tracker := state.NewTracker(store)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", httpx.HandleHealthz())
+	mux.HandleFunc("GET /readyz", httpx.HandleReadyz())
+
+	opts := []registry.Option{
+		registry.WithRouter(router),
+		registry.WithUpstreamFallback(upstreamFallback),
+		registry.WithMetrics(nil),
+	}
+	if upstreamRegistry != "" {
+		opts = append(opts, registry.WithUpstreamRegistry(upstreamRegistry))
+	}
+	ociHandler := registry.NewOCIHandler(store, opts...)
+	ociHandler.RegisterRoutes(mux)
+
+	digestHandler := registry.NewDigestHandler(tracker)
+	digestHandler.RegisterRoutes(mux)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	addr := listener.Addr().String()
+
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(listener) }()
+
+	return &testNode{
+		name:    name,
+		store:   nil,
 		tracker: tracker,
 		addr:    addr,
 		server:  srv,
@@ -493,6 +535,94 @@ func TestP2PThreeNodeCluster(t *testing.T) {
 		t.Logf("P2P hit rate: 100%% (2/2 pulls from peers)")
 		t.Logf("P2P success rate: 100%%")
 	})
+}
+
+func TestRegistryEndpointP2PRoutingIntegration(t *testing.T) {
+	ctx := context.Background()
+
+	peer := startTestNode(t, "registry-p2p-peer")
+	defer peer.stop()
+
+	configData := []byte(`{"architecture":"amd64","os":"linux"}`)
+	layerData := []byte("registry endpoint p2p layer content")
+	configDigest, layerDigest := peer.store.addImage("library/blank-node:latest", configData, layerData)
+	peer.initTracker(ctx, t)
+
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer upstream.Close()
+
+	pw := routing.NewPeerWatcher([]string{peer.addr})
+	router := routing.NewStaticRouter(pw)
+	healthCtx, healthCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer healthCancel()
+	go func() { _ = router.RunHealthCheck(healthCtx, 100*time.Millisecond) }()
+	time.Sleep(200 * time.Millisecond)
+
+	localStore := newMockStore("blank-local")
+	local := startRoutedTestNodeWithStore(t, "blank-node", localStore, router, true, upstream.URL)
+	defer local.stop()
+
+	t.Run("ManifestGETFromBlankNodeUsesP2P", func(t *testing.T) {
+		resp, err := http.Get(fmt.Sprintf("http://%s/v2/library/blank-node/manifests/latest", local.addr))
+		if err != nil {
+			t.Fatalf("manifest GET failed: %v", err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("manifest status=%d, want 200 body=%q", resp.StatusCode, string(body))
+		}
+		if digest.FromBytes(body) != configDigest {
+			t.Fatalf("manifest digest mismatch: got %s want %s", digest.FromBytes(body), configDigest)
+		}
+		if got := resp.Header.Get("Docker-Content-Digest"); got != configDigest.String() {
+			t.Fatalf("Docker-Content-Digest=%q, want %s", got, configDigest)
+		}
+	})
+
+	t.Run("BlobHEADAndGETFromBlankNodeUseP2P", func(t *testing.T) {
+		blobURL := fmt.Sprintf("http://%s/v2/library/blank-node/blobs/%s", local.addr, layerDigest)
+
+		headReq, err := http.NewRequest(http.MethodHead, blobURL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		headResp, err := http.DefaultClient.Do(headReq)
+		if err != nil {
+			t.Fatalf("blob HEAD failed: %v", err)
+		}
+		headResp.Body.Close()
+		if headResp.StatusCode != http.StatusOK {
+			t.Fatalf("blob HEAD status=%d, want 200", headResp.StatusCode)
+		}
+		if got := headResp.Header.Get("Docker-Content-Digest"); got != layerDigest.String() {
+			t.Fatalf("HEAD Docker-Content-Digest=%q, want %s", got, layerDigest)
+		}
+
+		getResp, err := http.Get(blobURL)
+		if err != nil {
+			t.Fatalf("blob GET failed: %v", err)
+		}
+		defer getResp.Body.Close()
+		body, _ := io.ReadAll(getResp.Body)
+		if getResp.StatusCode != http.StatusOK {
+			t.Fatalf("blob GET status=%d, want 200 body=%q", getResp.StatusCode, string(body))
+		}
+		if digest.FromBytes(body) != layerDigest {
+			t.Fatalf("blob digest mismatch: got %s want %s", digest.FromBytes(body), layerDigest)
+		}
+		if got := getResp.Header.Get("Docker-Content-Digest"); got != headResp.Header.Get("Docker-Content-Digest") {
+			t.Fatalf("GET digest=%q, HEAD digest=%q", got, headResp.Header.Get("Docker-Content-Digest"))
+		}
+	})
+
+	if upstreamHits != 0 {
+		t.Fatalf("upstream hits=%d, want 0 for P2P registry path", upstreamHits)
+	}
 }
 
 func TestHealthCheckIntegration(t *testing.T) {

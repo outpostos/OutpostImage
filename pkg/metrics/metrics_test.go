@@ -45,6 +45,10 @@ func newTestMetrics() (*Metrics, *prometheus.Registry) {
 			prometheus.GaugeOpts{Name: "test_router_balancer_peers"},
 			[]string{"digest"},
 		),
+		RouterRegistryReadsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Name: "test_router_registry_reads_total"},
+			[]string{"type", "source"},
+		),
 		StorageDigestsGauge: prometheus.NewGauge(
 			prometheus.GaugeOpts{Name: "test_storage_digests"},
 		),
@@ -75,7 +79,7 @@ func newTestMetrics() (*Metrics, *prometheus.Registry) {
 	reg.MustRegister(
 		m.HTTPRequestsTotal, m.HTTPRequestDuration, m.HTTPResponsesTotal,
 		m.PeerHealthStatus, m.RouterLookupsTotal, m.RouterLookupDuration,
-		m.RouterBalancerPeers, m.StorageDigestsGauge, m.StorageImagesGauge,
+		m.RouterBalancerPeers, m.RouterRegistryReadsTotal, m.StorageDigestsGauge, m.StorageImagesGauge,
 		m.ProxyRequestsTotal, m.ProxyInterceptedTotal, m.ProxyUpstreamTotal,
 		m.MDNSPeersDiscoveredTotal, m.PeerLatencySeconds,
 	)
@@ -159,6 +163,31 @@ func TestRecordRouterLookup(t *testing.T) {
 	}
 	if lookupCount != 2 {
 		t.Errorf("expected 2 lookups, got %f", lookupCount)
+	}
+}
+
+func TestRecordRouterRegistryRead(t *testing.T) {
+	m, reg := newTestMetrics()
+
+	m.RecordRouterRegistryRead("manifest", "p2p")
+	m.RecordRouterRegistryRead("blob", "upstream")
+	m.RecordRouterRegistryRead("blob", "miss")
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var count float64
+	for _, mf := range mfs {
+		if mf.GetName() == "test_router_registry_reads_total" {
+			for _, metric := range mf.GetMetric() {
+				count += metric.GetCounter().GetValue()
+			}
+		}
+	}
+	if count != 3 {
+		t.Errorf("expected 3 registry read metrics, got %f", count)
 	}
 }
 
