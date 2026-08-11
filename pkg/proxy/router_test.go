@@ -11,8 +11,21 @@ import (
 	"github.com/opencontainers/go-digest"
 
 	"github.com/outpostos/outpostimage/pkg/oci"
+	"github.com/outpostos/outpostimage/pkg/routing"
 	"github.com/outpostos/outpostimage/pkg/state"
 )
+
+// mockRouter is a routing.Router that is NOT a *routing.StaticRouter,
+// used to test the non-static-router branch of HealthyPeersFromRouter.
+type mockRouter struct{}
+
+func (m *mockRouter) Ready(_ context.Context) (bool, error)                                 { return true, nil }
+func (m *mockRouter) Lookup(_ context.Context, _ digest.Digest) (*routing.Balancer, error)  { return nil, nil }
+func (m *mockRouter) Advertise(_ context.Context, _ []digest.Digest) error                  { return nil }
+func (m *mockRouter) Withdraw(_ context.Context, _ []digest.Digest) error                   { return nil }
+func (m *mockRouter) PeerLatency(_ string) float64                                           { return 0 }
+func (m *mockRouter) RunHealthCheck(_ context.Context, _ time.Duration) error                { return nil }
+func (m *mockRouter) HealthyPeers() []string                                                 { return nil }
 
 type routerMockStore struct {
 	images []oci.Image
@@ -129,5 +142,180 @@ func TestFetchFromPeerSetsPeerFetchHeader(t *testing.T) {
 
 	if gotHeader != PeerFetchValue {
 		t.Fatalf("%s = %q, want %q", PeerFetchHeader, gotHeader, PeerFetchValue)
+	}
+}
+
+func TestFetchFromPeer_NonSuccessStatus(t *testing.T) {
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer peer.Close()
+
+	_, err := FetchFromPeer(context.Background(), peer.Listener.Addr().String(), http.MethodGet, "/v2/missing/blobs/sha256:abc", nil, "")
+	if err == nil {
+		t.Fatal("expected error for non-success status")
+	}
+}
+
+func TestFetchFromPeers_FirstSucceeds(t *testing.T) {
+	// Server handles both the healthz check and blob requests with 200.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("blob-data"))
+	}))
+	defer srv.Close()
+
+	addr := srv.Listener.Addr().String()
+	pw := routing.NewPeerWatcher([]string{addr})
+	r := routing.NewStaticRouter(pw)
+
+	// Trigger the initial health check so the peer is marked healthy.
+	hctx, hcancel := context.WithCancel(context.Background())
+	go func() {
+		_ = r.RunHealthCheck(hctx, time.Hour)
+	}()
+	time.Sleep(150 * time.Millisecond)
+	hcancel()
+
+	resp, peer, ok := FetchFromPeers(context.Background(), r, http.MethodGet, "/v2/library/nginx/blobs/sha256:abc", nil, "")
+	if !ok {
+		t.Fatal("expected FetchFromPeers to succeed")
+	}
+	resp.Body.Close()
+	if peer != addr {
+		t.Errorf("peer = %q, want %q", peer, addr)
+	}
+}
+
+func TestFetchFromPeers_NoPeers(t *testing.T) {
+	pw := routing.NewPeerWatcher(nil)
+	r := routing.NewStaticRouter(pw)
+
+	_, _, ok := FetchFromPeers(context.Background(), r, http.MethodGet, "/v2/missing/blobs/sha256:abc", nil, "")
+	if ok {
+		t.Fatal("expected FetchFromPeers to fail with no peers")
+	}
+}
+
+func TestFetchFromUpstream_Success(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("upstream-data"))
+	}))
+	defer upstream.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/blobs/sha256:abc", nil)
+	req.Header.Set("X-Upstream-Registry", upstream.URL)
+
+	resp, err := FetchFromUpstream(context.Background(), req, http.MethodGet, "")
+	if err != nil {
+		t.Fatalf("FetchFromUpstream() error = %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func TestFetchFromUpstream_UsesXOriginalRegistry(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/latest", nil)
+	req.Header.Set("X-Original-Registry", upstream.URL)
+
+	resp, err := FetchFromUpstream(context.Background(), req, http.MethodGet, "")
+	if err != nil {
+		t.Fatalf("FetchFromUpstream() error = %v", err)
+	}
+	resp.Body.Close()
+}
+
+func TestUpstreamBaseURL(t *testing.T) {
+	tests := []struct {
+		input   string
+		wantURL string
+		wantErr bool
+	}{
+		{"", "", true},
+		{"docker.io", "https://registry-1.docker.io", false},
+		{"index.docker.io", "https://registry-1.docker.io", false},
+		{"ghcr.io", "https://ghcr.io", false},
+		{"http://localhost:5000", "http://localhost:5000", false},
+		{"https://registry.example.com/path", "https://registry.example.com", false},
+	}
+	for _, tt := range tests {
+		got, err := upstreamBaseURL(tt.input)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("upstreamBaseURL(%q): expected error, got none", tt.input)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("upstreamBaseURL(%q): unexpected error: %v", tt.input, err)
+			continue
+		}
+		if got != tt.wantURL {
+			t.Errorf("upstreamBaseURL(%q) = %q, want %q", tt.input, got, tt.wantURL)
+		}
+	}
+}
+
+func TestHeadBlobSize_Found(t *testing.T) {
+	const blobSize = 12345
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "12345")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	size := headBlobSize(context.Background(), srv.Listener.Addr().String(), "/v2/lib/nginx/blobs/sha256:abc")
+	if size != blobSize {
+		t.Errorf("headBlobSize = %d, want %d", size, blobSize)
+	}
+}
+
+func TestHeadBlobSize_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	size := headBlobSize(context.Background(), srv.Listener.Addr().String(), "/v2/lib/nginx/blobs/sha256:abc")
+	if size != 0 {
+		t.Errorf("headBlobSize = %d, want 0 for not found", size)
+	}
+}
+
+func TestHealthyPeersFromRouter_StaticRouter(t *testing.T) {
+	// Start a real server that returns 200 for health checks.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	addr := srv.Listener.Addr().String()
+	pw := routing.NewPeerWatcher([]string{addr})
+	r := routing.NewStaticRouter(pw)
+
+	// Trigger initial health check.
+	hctx, hcancel := context.WithCancel(context.Background())
+	go func() { _ = r.RunHealthCheck(hctx, time.Hour) }()
+	time.Sleep(150 * time.Millisecond)
+	hcancel()
+
+	peers := HealthyPeersFromRouter(context.Background(), r)
+	if len(peers) != 1 || peers[0] != addr {
+		t.Errorf("HealthyPeersFromRouter = %v, want [%s]", peers, addr)
+	}
+}
+
+func TestHealthyPeersFromRouter_NonStaticRouter(t *testing.T) {
+	peers := HealthyPeersFromRouter(context.Background(), &mockRouter{})
+	if peers != nil {
+		t.Errorf("expected nil for non-StaticRouter, got %v", peers)
 	}
 }

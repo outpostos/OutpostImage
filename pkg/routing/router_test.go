@@ -247,3 +247,68 @@ func TestStaticRouter_HealthyPeers_Recovery(t *testing.T) {
 		t.Error("expected peer with expired backoff to be included in healthy peers")
 	}
 }
+
+func TestStaticRouter_PeerLatency_Default(t *testing.T) {
+	pw := NewPeerWatcher([]string{"peer:5000"})
+	r := NewStaticRouter(pw)
+
+	// Before any health check, latency should be 0
+	lat := r.PeerLatency("peer:5000")
+	if lat != 0 {
+		t.Errorf("expected 0 latency for unknown peer, got %f", lat)
+	}
+}
+
+func TestStaticRouter_PeerLatency_AfterHealthCheck(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	pw := NewPeerWatcher([]string{addr})
+	r := NewStaticRouter(pw)
+
+	r.checkAllPeers(context.Background())
+
+	lat := r.PeerLatency(addr)
+	if lat < 0 {
+		t.Errorf("expected non-negative latency after health check, got %f", lat)
+	}
+}
+
+func TestStaticRouter_RunHealthCheck_CancelledContext(t *testing.T) {
+	pw := NewPeerWatcher(nil)
+	r := NewStaticRouter(pw)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	err := r.RunHealthCheck(ctx, 100*time.Millisecond)
+	if err != nil {
+		t.Errorf("expected nil error on cancelled context, got %v", err)
+	}
+}
+
+func TestStaticRouter_RunHealthCheck_RunsChecks(t *testing.T) {
+	checkCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		checkCount++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	pw := NewPeerWatcher([]string{addr})
+	r := NewStaticRouter(pw)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	// Run with 50ms interval; should fire the initial check + at least 1 ticker check
+	_ = r.RunHealthCheck(ctx, 80*time.Millisecond)
+
+	if checkCount < 2 {
+		t.Errorf("expected at least 2 health checks, got %d", checkCount)
+	}
+}
