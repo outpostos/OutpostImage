@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsOCIRequest(t *testing.T) {
@@ -338,6 +339,45 @@ func TestProxy_Connect_TCPTunnel(t *testing.T) {
 	// Close the client side; this unblocks the proxy's copy goroutines.
 	clientConn.Close()
 	<-done
+}
+
+// TestProxy_Connect_InsecureMITM_HandshakeFails exercises handleMITM and
+// generateSelfSignedCert. When the registry is marked insecure, handleConnect
+// calls handleMITM. We close the client pipe without doing a TLS handshake,
+// which causes the TLS handshake in handleMITM to fail cleanly.
+func TestProxy_Connect_InsecureMITM_HandshakeFails(t *testing.T) {
+	// Any listener address to register as insecure.
+	targetAddr := "127.0.0.1:12345"
+
+	p := NewProxy(nil).WithInsecureRegistries([]string{targetAddr})
+
+	clientConn, serverConn := net.Pipe()
+
+	req := httptest.NewRequest(http.MethodConnect, "https://"+targetAddr, nil)
+	req.Host = targetAddr
+	fw := &fakeHijackWriter{conn: serverConn, headers: make(http.Header)}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.handleConnect(fw, req)
+	}()
+
+	// Read the 200 Connection Established from the proxy.
+	header := make([]byte, 64)
+	n, _ := clientConn.Read(header)
+	if !strings.HasPrefix(string(header[:n]), "HTTP/1.1 200") {
+		t.Fatalf("expected 200, got: %q", string(header[:n]))
+	}
+
+	// Close without starting TLS – the TLS handshake in handleMITM will fail.
+	clientConn.Close()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Error("handleConnect timed out")
+	}
 }
 
 // TestForwardToUpstream_DialFailed exercises the TLS dial error path in forwardToUpstream.
