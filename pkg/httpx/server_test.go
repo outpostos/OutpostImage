@@ -1,10 +1,16 @@
 package httpx
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 func TestHandleHealthz(t *testing.T) {
@@ -47,5 +53,42 @@ func TestHandleReadyz(t *testing.T) {
 	}
 	if body["status"] != "ready" {
 		t.Fatalf("status = %q, want %q", body["status"], "ready")
+	}
+}
+
+func TestServe_StartsAndShutdown(t *testing.T) {
+	// Pick a random free port.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	g, gctx := errgroup.WithContext(ctx)
+	Serve(gctx, g, addr, handler, "test")
+
+	// Wait briefly for the server to start accepting connections.
+	time.Sleep(50 * time.Millisecond)
+
+	resp, err := http.Get("http://" + addr + "/")
+	if err != nil {
+		t.Fatalf("request to server failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	// Cancel the context to trigger graceful shutdown.
+	cancel()
+	if err := g.Wait(); err != nil {
+		t.Fatalf("errgroup error: %v", err)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 )
@@ -313,5 +314,81 @@ func TestDockerStore_EmptyRoot(t *testing.T) {
 	}
 	if len(images) != 0 {
 		t.Fatalf("expected 0 images, got %d", len(images))
+	}
+}
+
+// TestDockerStore_GetBlob_Layer exercises streamLayerTar by fetching a layer blob.
+func TestDockerStore_GetBlob_Layer(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build manifest so layerBlobs is populated with tar digest → layerBlob.
+	configDgst, _ := store.Resolve(context.Background(), "nginx:latest")
+	_, _, err := store.GetManifest(context.Background(), configDgst)
+	if err != nil {
+		t.Fatalf("GetManifest failed: %v", err)
+	}
+
+	store.mu.RLock()
+	var tarDgst digest.Digest
+	for d := range store.layerBlobs {
+		tarDgst = d
+		break
+	}
+	store.mu.RUnlock()
+
+	if tarDgst == "" {
+		t.Fatal("expected at least one layer blob after manifest build")
+	}
+
+	// GetBlob on a layer digest calls streamLayerTar internally.
+	rc, size, err := store.GetBlob(context.Background(), tarDgst)
+	if err != nil {
+		t.Fatalf("GetBlob(layer) failed: %v", err)
+	}
+	defer rc.Close()
+	if size < 0 {
+		t.Errorf("expected non-negative size, got %d", size)
+	}
+}
+
+// TestDockerStore_Subscribe verifies that file creation in imagedb emits events.
+func TestDockerStore_Subscribe(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ch, err := store.Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+
+	// Write a new file to the imagedb directory to trigger a Create event.
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+	newDigest := "bbbb000000000000000000000000000000000000000000000000000000000000"
+	newFile := filepath.Join(imagedbDir, newDigest)
+	if err := os.WriteFile(newFile, []byte("{}"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	select {
+	case ev := <-ch:
+		if ev.Type != EventCreate {
+			t.Errorf("event type = %v, want EventCreate", ev.Type)
+		}
+		wantDgst := digest.Digest("sha256:" + newDigest)
+		if ev.Digest != wantDgst {
+			t.Errorf("event digest = %v, want %v", ev.Digest, wantDgst)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for Subscribe event")
 	}
 }

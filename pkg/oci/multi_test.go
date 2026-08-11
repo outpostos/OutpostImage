@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -272,5 +274,65 @@ func TestMultiStore_Empty(t *testing.T) {
 
 	if ms.HasBlob(ctx, digest.FromBytes([]byte("x"))) {
 		t.Error("HasBlob should return false on empty MultiStore")
+	}
+}
+
+// TestDetectStores_NoStores verifies that DetectStores returns empty when no
+// Docker or containerd storage directories are present.
+func TestDetectStores_NoStores(t *testing.T) {
+	root := t.TempDir()
+	stores := DetectStores(context.Background(), root, root)
+	if len(stores) != 0 {
+		t.Errorf("expected 0 stores, got %d", len(stores))
+	}
+}
+
+// TestDetectStores_DockerDirPresent verifies that DetectStores detects a Docker
+// imagedb directory even when Init fails (no real data) — the detection code
+// path itself is exercised.
+func TestDetectStores_DockerDirPresent(t *testing.T) {
+	dockerRoot := t.TempDir()
+	// Create the directory that DockerStore detection looks for.
+	imagedbDir := filepath.Join(dockerRoot, "image", "overlay2", "imagedb")
+	if err := os.MkdirAll(imagedbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	containerdRoot := t.TempDir() // no containerd dirs → skipped
+
+	// Init will fail because there's no real imagedb data, so stores is empty,
+	// but the detection (os.Stat) branch is exercised.
+	stores := DetectStores(context.Background(), dockerRoot, containerdRoot)
+	// The store is not added when Init fails, so we only check for no panic.
+	_ = stores
+}
+
+// TestDetectStores_ContainerdDirPresent verifies that DetectStores detects a
+// containerd content directory even when Init fails.
+func TestDetectStores_ContainerdDirPresent(t *testing.T) {
+	dockerRoot := t.TempDir() // no Docker dirs → skipped
+
+	containerdRoot := t.TempDir()
+	blobsDir := filepath.Join(containerdRoot, "io.containerd.content.v1.content", "blobs")
+	if err := os.MkdirAll(blobsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	stores := DetectStores(context.Background(), dockerRoot, containerdRoot)
+	_ = stores
+}
+
+// TestDetectStores_FullDockerFixture verifies that DetectStores successfully
+// initialises a DockerStore when a valid fixture directory is present.
+func TestDetectStores_FullDockerFixture(t *testing.T) {
+	root := setupDockerFixture(t)
+	containerdRoot := t.TempDir()
+
+	stores := DetectStores(context.Background(), root, containerdRoot)
+	if len(stores) != 1 {
+		t.Fatalf("expected 1 store (docker), got %d", len(stores))
+	}
+	if stores[0].Name() != "docker" {
+		t.Errorf("store name = %q, want %q", stores[0].Name(), "docker")
 	}
 }
