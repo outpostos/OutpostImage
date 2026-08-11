@@ -319,3 +319,91 @@ func TestHealthyPeersFromRouter_NonStaticRouter(t *testing.T) {
 		t.Errorf("expected nil for non-StaticRouter, got %v", peers)
 	}
 }
+
+func TestPeerSchemeAndAddr(t *testing.T) {
+	tests := []struct {
+		addr       string
+		wantScheme string
+		wantHost   string
+	}{
+		{"https://peer.local:5000", "https", "peer.local:5000"},
+		{"http://peer.local:5000", "http", "peer.local:5000"},
+		{":5000", "http", "localhost:5000"},
+		{"peer.local:5000", "http", "peer.local:5000"},
+		{"127.0.0.1:8080", "http", "127.0.0.1:8080"},
+	}
+	for _, tt := range tests {
+		s, h := peerSchemeAndAddr(tt.addr)
+		if s != tt.wantScheme {
+			t.Errorf("peerSchemeAndAddr(%q).scheme = %q, want %q", tt.addr, s, tt.wantScheme)
+		}
+		if h != tt.wantHost {
+			t.Errorf("peerSchemeAndAddr(%q).host = %q, want %q", tt.addr, h, tt.wantHost)
+		}
+	}
+}
+
+func TestTryManifestFrom_Success(t *testing.T) {
+	manifest := []byte(`{"schemaVersion":2}`)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(manifest)
+	}))
+	defer srv.Close()
+
+	rec := httptest.NewRecorder()
+	ok := tryManifestFrom(context.Background(), rec, srv.Listener.Addr().String(),
+		"/v2/library/nginx/manifests/latest", "docker.io", true)
+
+	if !ok {
+		t.Fatal("expected tryManifestFrom to return true on 200")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestTryManifestFrom_NonOK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	rec := httptest.NewRecorder()
+	ok := tryManifestFrom(context.Background(), rec, srv.Listener.Addr().String(),
+		"/v2/library/nginx/manifests/missing", "", false)
+
+	if ok {
+		t.Fatal("expected tryManifestFrom to return false on 404")
+	}
+}
+
+func TestRequestRouter_V2VersionCheck(t *testing.T) {
+	tracker := setupRouterTest(t)
+	interceptor := RequestRouter(tracker, "localhost:5000")
+
+	req := httptest.NewRequest(http.MethodGet, "http://registry.example.com/v2/", nil)
+	rec := httptest.NewRecorder()
+
+	handled := interceptor(rec, req)
+	if !handled {
+		t.Fatal("expected /v2/ version check to be handled locally")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestRequestRouter_V2NormPath(t *testing.T) {
+	tracker := setupRouterTest(t)
+	interceptor := RequestRouter(tracker, "localhost:5000")
+
+	req := httptest.NewRequest(http.MethodGet, "http://registry.example.com/v2", nil)
+	rec := httptest.NewRecorder()
+
+	handled := interceptor(rec, req)
+	if !handled {
+		t.Fatal("expected /v2 to be handled locally")
+	}
+}
