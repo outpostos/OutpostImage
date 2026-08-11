@@ -126,3 +126,11 @@ func TestMDNSService_PeerExpiry(t *testing.T) {
 		t.Error("active peer should still exist")
 	}
 }
+
+// TestMDNSService_Shutdown_NilServer verifies that Shutdown is safe when no
+// mDNS server has been started (server field is nil).
+func TestMDNSService_Shutdown_NilServer(t *testing.T) {
+	svc := NewMDNSService(MDNSConfig{Port: 5000})
+	// Should not panic and should be a no-op.
+	svc.Shutdown()
+}

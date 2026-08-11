@@ -2,10 +2,12 @@ package proxy
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -238,5 +240,130 @@ func TestBufferedResponseWriter_WriteTo(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusAccepted)
+	}
+}
+
+// TestProxy_Connect_HijackNotSupported exercises the "hijacking not supported" error path.
+// httptest.ResponseRecorder does not implement http.Hijacker, so handleConnect returns 500.
+func TestProxy_Connect_HijackNotSupported(t *testing.T) {
+	p := NewProxy(nil)
+	req := httptest.NewRequest(http.MethodConnect, "https://registry.example.com:443", nil)
+	req.Host = "registry.example.com:443"
+	rec := httptest.NewRecorder()
+
+	p.handleConnect(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+// fakeHijackWriter is a ResponseWriter that also implements http.Hijacker.
+// It writes the HTTP status line directly to the conn without adding chunked
+// encoding, making it safe to use for testing CONNECT proxy logic.
+type fakeHijackWriter struct {
+	conn    net.Conn
+	headers http.Header
+	written bool
+}
+
+func (w *fakeHijackWriter) Header() http.Header { return w.headers }
+func (w *fakeHijackWriter) WriteHeader(code int) {
+	if w.written {
+		return
+	}
+	w.written = true
+	fmt.Fprintf(w.conn, "HTTP/1.1 %d %s\r\n\r\n", code, http.StatusText(code))
+}
+func (w *fakeHijackWriter) Write(b []byte) (int, error) { return w.conn.Write(b) }
+func (w *fakeHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	br := bufio.NewReadWriter(bufio.NewReader(w.conn), bufio.NewWriter(w.conn))
+	return w.conn, br, nil
+}
+
+// TestProxy_Connect_TCPTunnel exercises the full CONNECT → TCP tunnel path
+// using a fake hijacker to bypass Go HTTP server's chunked encoding.
+func TestProxy_Connect_TCPTunnel(t *testing.T) {
+	// Raw TCP echo server: accepts one connection, echoes data, then closes.
+	echoLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer echoLn.Close()
+	go func() {
+		c, err := echoLn.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		buf := make([]byte, 128)
+		n, _ := c.Read(buf)
+		_, _ = c.Write(buf[:n])
+	}()
+
+	targetAddr := echoLn.Addr().String()
+
+	// client ←→ proxy pair via net.Pipe
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+
+	p := NewProxy(nil)
+	req := httptest.NewRequest(http.MethodConnect, "https://"+targetAddr, nil)
+	req.Host = targetAddr
+	fw := &fakeHijackWriter{conn: serverConn, headers: make(http.Header)}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.handleConnect(fw, req)
+	}()
+
+	// Read 200 Connection Established from the proxy.
+	header := make([]byte, 38) // "HTTP/1.1 200 OK\r\n\r\n" is 19 bytes; be generous
+	n, _ := clientConn.Read(header)
+	if !strings.HasPrefix(string(header[:n]), "HTTP/1.1 200") {
+		t.Fatalf("expected 200, got: %q", string(header[:n]))
+	}
+
+	// Send "hello" through the tunnel; echo server writes it back.
+	msg := "hello"
+	clientConn.Write([]byte(msg))
+
+	got := make([]byte, len(msg))
+	io.ReadFull(clientConn, got)
+	if string(got) != msg {
+		t.Errorf("echo = %q, want %q", got, msg)
+	}
+
+	// Close the client side; this unblocks the proxy's copy goroutines.
+	clientConn.Close()
+	<-done
+}
+
+// TestForwardToUpstream_DialFailed exercises the TLS dial error path in forwardToUpstream.
+func TestForwardToUpstream_DialFailed(t *testing.T) {
+	p := NewProxy(nil)
+
+	server, client := net.Pipe()
+	defer server.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "https://127.0.0.1:1/v2/", nil)
+	req.URL.Scheme = "https"
+	req.URL.Host = "127.0.0.1:1"
+	req.RequestURI = ""
+
+	go func() {
+		// Pass an unreachable hostPort so tls.Dial fails immediately.
+		p.forwardToUpstream(server, req, "127.0.0.1:1", true)
+		server.Close()
+	}()
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read error response: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadGateway)
 	}
 }
