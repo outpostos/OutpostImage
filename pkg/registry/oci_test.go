@@ -83,7 +83,7 @@ func newOCITestMux() *http.ServeMux {
 		},
 	}
 
-	handler := NewOCIHandler(store)
+	handler := NewOCIHandler(store, WithUpstreamFallback(false), WithMetrics(nil))
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 	return mux
