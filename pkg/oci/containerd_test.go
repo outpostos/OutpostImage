@@ -1088,6 +1088,66 @@ func TestContainerdStore_LoadMetadataDB_CorruptDB(t *testing.T) {
 	}
 }
 
+// TestContainerdStore_LoadMetadataDB_CopyError exercises the io.Copy error path in
+// loadMetadataDB by making meta.db a directory: os.Stat succeeds, os.Open succeeds
+// (returns a dir fd on Linux), but io.Copy fails with EISDIR on the first Read.
+func TestContainerdStore_LoadMetadataDB_CopyError(t *testing.T) {
+	root := t.TempDir()
+	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
+	if err := os.MkdirAll(blobDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create the meta.db PATH as a directory so io.Copy(tmp, dirFd) fails with EISDIR.
+	dbDir := filepath.Join(root, "io.containerd.metadata.v1.bolt", "meta.db")
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewContainerdStore(root)
+	if err := store.loadMetadataDB(); err == nil {
+		t.Fatal("expected error when meta.db is a directory (io.Copy should fail)")
+	}
+}
+
+// TestContainerdStore_LoadMetadataDB_V1KeyValue exercises the `nsBucket == nil → return nil`
+// path in loadMetadataDB when the v1 bucket contains a regular key-value pair (not a
+// sub-bucket). Bolt's ForEach iterates over all entries including non-bucket keys; calling
+// Bucket() on such a key returns nil.
+func TestContainerdStore_LoadMetadataDB_V1KeyValue(t *testing.T) {
+	root := t.TempDir()
+	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
+	if err := os.MkdirAll(blobDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	dbPath := filepath.Join(root, "io.containerd.metadata.v1.bolt", "meta.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = db.Update(func(tx *bolt.Tx) error {
+		v1, err := tx.CreateBucketIfNotExists([]byte("v1"))
+		if err != nil {
+			return err
+		}
+		// A regular KV entry in v1 (not a sub-bucket) → v1.Bucket("not-ns") == nil.
+		return v1.Put([]byte("not-a-namespace"), []byte("some-value"))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	store := NewContainerdStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+}
+
 // TestDetectMediaType_OctetStream exercises the fallback "application/octet-stream"
 // path when the content is valid JSON but has no recognizable structure.
 func TestDetectMediaType_OctetStream(t *testing.T) {
