@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -13,13 +14,18 @@ import (
 
 // mockStore implements oci.Store for testing.
 type mockStore struct {
-	images []oci.Image
-	events chan oci.Event
+	images       []oci.Image
+	events       chan oci.Event
+	listImagesErr error
+	subscribeErr  error
 }
 
 func (m *mockStore) Name() string { return "mock" }
 
 func (m *mockStore) ListImages(_ context.Context) ([]oci.Image, error) {
+	if m.listImagesErr != nil {
+		return nil, m.listImagesErr
+	}
 	return m.images, nil
 }
 
@@ -40,6 +46,9 @@ func (m *mockStore) HasBlob(_ context.Context, _ digest.Digest) bool {
 }
 
 func (m *mockStore) Subscribe(_ context.Context) (<-chan oci.Event, error) {
+	if m.subscribeErr != nil {
+		return nil, m.subscribeErr
+	}
 	return m.events, nil
 }
 
@@ -163,5 +172,54 @@ func TestTracker_NonexistentDigest(t *testing.T) {
 	fake, _ := digest.Parse("sha256:0000000000000000000000000000000000000000000000000000000000000000")
 	if tracker.HasDigest(fake) {
 		t.Error("expected false for nonexistent digest")
+	}
+}
+
+// TestTracker_ListImagesError covers the `return err` path when ListImages fails.
+func TestTracker_ListImagesError(t *testing.T) {
+	store := &mockStore{
+		listImagesErr: errors.New("list failed"),
+		events:        make(chan oci.Event),
+	}
+	tracker := NewTracker(store)
+	err := tracker.Track(context.Background())
+	if err == nil || err.Error() != "list failed" {
+		t.Errorf("expected 'list failed', got %v", err)
+	}
+}
+
+// TestTracker_SubscribeError covers the `return err` path when Subscribe fails.
+func TestTracker_SubscribeError(t *testing.T) {
+	store := &mockStore{
+		subscribeErr: errors.New("subscribe failed"),
+		events:       make(chan oci.Event),
+	}
+	tracker := NewTracker(store)
+	err := tracker.Track(context.Background())
+	if err == nil || err.Error() != "subscribe failed" {
+		t.Errorf("expected 'subscribe failed', got %v", err)
+	}
+}
+
+// TestTracker_ChannelClosed covers the `!ok → return nil` path when the events
+// channel is closed by the store.
+func TestTracker_ChannelClosed(t *testing.T) {
+	events := make(chan oci.Event)
+	store := &mockStore{events: events}
+	tracker := NewTracker(store)
+
+	done := make(chan error, 1)
+	go func() { done <- tracker.Track(context.Background()) }()
+
+	time.Sleep(50 * time.Millisecond) // let Track reach the event loop
+	close(events)                     // closing the channel triggers the !ok path
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("expected nil after channel close, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("Track did not return after events channel was closed")
 	}
 }
