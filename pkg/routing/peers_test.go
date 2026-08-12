@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -56,6 +57,22 @@ func TestParsePeersFile_NotFound(t *testing.T) {
 	_, err := ParsePeersFile("/nonexistent/peers.txt")
 	if err == nil {
 		t.Fatal("expected error for nonexistent file")
+	}
+}
+
+// TestParsePeersFile_LineTooLong exercises the scanner.Err() return path in
+// ParsePeersFile. bufio.Scanner returns bufio.ErrTooLong when a single line
+// exceeds its MaxScanTokenSize (64 KiB) default buffer.
+func TestParsePeersFile_LineTooLong(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "peers.txt")
+	// 65537 bytes on one line — larger than bufio.MaxScanTokenSize (65536).
+	line := strings.Repeat("x", 65537) + "\n"
+	if err := os.WriteFile(path, []byte(line), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ParsePeersFile(path)
+	if err == nil {
+		t.Error("expected error for line exceeding max scan token size")
 	}
 }
 
