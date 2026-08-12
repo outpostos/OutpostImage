@@ -497,6 +497,170 @@ func TestDockerStore_Subscribe_AddError(t *testing.T) {
 }
 
 // TestTarDirectory_WithSymlink verifies that tarDirectory handles symlinks correctly.
+// TestDockerStore_GetBlob_NotFound exercises the "blob not found" error path in GetBlob —
+// a digest that is not in blobs, layerBlobs, or rewrittenConfigs returns an error.
+func TestDockerStore_GetBlob_NotFound(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	unknown := digest.FromString("not-a-blob")
+	_, _, err := store.GetBlob(context.Background(), unknown)
+	if err == nil {
+		t.Fatal("expected error for unknown blob")
+	}
+}
+
+// TestComputeLayerTarDigest_Error exercises the error return in computeLayerTarDigest when
+// tarDirectory fails — passing a nonexistent path propagates the error.
+func TestComputeLayerTarDigest_Error(t *testing.T) {
+	_, _, err := computeLayerTarDigest("/nonexistent/path/that/does/not/exist")
+	if err == nil {
+		t.Fatal("expected error for nonexistent diff path")
+	}
+}
+
+// TestBuildImageManifest_SharedLayer covers the "found=true" path in buildImageManifest —
+// two images sharing the same layer cause the second manifest build to reuse the cached
+// tar digest rather than recomputing it.
+func TestBuildImageManifest_SharedLayer(t *testing.T) {
+	root := t.TempDir()
+
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+	layerdbDir := filepath.Join(root, "image", "overlay2", "layerdb", "sha256")
+	if err := os.MkdirAll(imagedbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(layerdbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	diffID := "aaaa000000000000000000000000000000000000000000000000000000000000"
+	chainDir := filepath.Join(layerdbDir, diffID)
+	if err := os.MkdirAll(chainDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chainDir, "diff"), []byte("sha256:"+diffID), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chainDir, "cache-id"), []byte("shared-cache"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chainDir, "size"), []byte("512"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	diffDir := filepath.Join(root, "overlay2", "shared-cache", "diff")
+	if err := os.MkdirAll(diffDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(diffDir, "data"), []byte("shared layer"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two configs that share the same layer diffID (different arch → different config digest)
+	config1Data, _ := json.Marshal(map[string]any{
+		"architecture": "amd64", "os": "linux",
+		"rootfs": map[string]any{"type": "layers", "diff_ids": []string{"sha256:" + diffID}},
+	})
+	config2Data, _ := json.Marshal(map[string]any{
+		"architecture": "arm64", "os": "linux",
+		"rootfs": map[string]any{"type": "layers", "diff_ids": []string{"sha256:" + diffID}},
+	})
+
+	dgst1 := digest.FromBytes(config1Data)
+	dgst2 := digest.FromBytes(config2Data)
+
+	if err := os.WriteFile(filepath.Join(imagedbDir, dgst1.Encoded()), config1Data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(imagedbDir, dgst2.Encoded()), config2Data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	repos := map[string]any{"Repositories": map[string]any{
+		"image1": map[string]string{"image1:v1": dgst1.String()},
+		"image2": map[string]string{"image2:v1": dgst2.String()},
+	}}
+	reposData, _ := json.Marshal(repos)
+	if err := os.WriteFile(filepath.Join(root, "image", "overlay2", "repositories.json"), reposData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build first image manifest — computes and caches layer tar digest.
+	m1, _, err := store.GetManifest(context.Background(), dgst1)
+	if err != nil {
+		t.Fatalf("GetManifest(image1): %v", err)
+	}
+
+	// Build second image manifest — must reuse the cached tar digest ("found=true" path).
+	m2, _, err := store.GetManifest(context.Background(), dgst2)
+	if err != nil {
+		t.Fatalf("GetManifest(image2): %v", err)
+	}
+
+	if len(m1) == 0 || len(m2) == 0 {
+		t.Error("expected non-empty manifest data for both images")
+	}
+}
+
+// TestDockerStore_Init_ScanImageDBError exercises the scanImageDB error path in Init when
+// the imagedb directory exists but is unreadable.
+func TestDockerStore_Init_ScanImageDBError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("cannot test permission errors as root")
+	}
+	root := t.TempDir()
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+	if err := os.MkdirAll(imagedbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "image", "overlay2", "layerdb", "sha256"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(imagedbDir, 0000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(imagedbDir, 0755)
+
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err == nil {
+		t.Fatal("expected error when imagedb dir is unreadable")
+	}
+}
+
+// TestDockerStore_Init_ScanLayerDBError exercises the scanLayerDB error path in Init when
+// the layerdb directory exists but is unreadable.
+func TestDockerStore_Init_ScanLayerDBError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("cannot test permission errors as root")
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	layerdbDir := filepath.Join(root, "image", "overlay2", "layerdb", "sha256")
+	if err := os.MkdirAll(layerdbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(layerdbDir, 0000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(layerdbDir, 0755)
+
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err == nil {
+		t.Fatal("expected error when layerdb dir is unreadable")
+	}
+}
+
 // TestDockerStore_GetManifest_NotFound exercises the "manifest not found" error path in
 // GetManifest — a digest that is not in the store returns an error.
 func TestDockerStore_GetManifest_NotFound(t *testing.T) {
