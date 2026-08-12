@@ -241,12 +241,6 @@ func (r *StaticRouter) HealthyPeers() []string {
 		if until, ok := r.backoff[p]; ok && now.Before(until) {
 			continue
 		}
-		// If explicitly marked unhealthy and still in backoff, skip
-		if h, ok := r.health[p]; ok && !h {
-			if until, ok := r.backoff[p]; ok && now.Before(until) {
-				continue
-			}
-		}
 		healthy = append(healthy, p)
 	}
 	return healthy

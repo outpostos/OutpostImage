@@ -411,34 +411,17 @@ func TestStaticRouter_QueryPeerDigest_InvalidURL(t *testing.T) {
 	}
 }
 
-// TestStaticRouter_HealthyPeers_UnhealthyWithActiveBackoff exercises the inner
-// continue on line 247: peer is marked unhealthy AND still has an active backoff.
-// (The outer check on line 241 only applies to peers in backoff without explicit health=false.)
-func TestStaticRouter_HealthyPeers_UnhealthyWithActiveBackoff(t *testing.T) {
+// TestStaticRouter_HealthyPeers_UnhealthyExpiredBackoff verifies that a peer
+// marked unhealthy but with an expired backoff is included in HealthyPeers.
+// Once the backoff timer expires, the peer is given another chance regardless
+// of its last health state.
+func TestStaticRouter_HealthyPeers_UnhealthyExpiredBackoff(t *testing.T) {
 	pw := NewPeerWatcher([]string{"peer:5000"})
 	r := NewStaticRouter(pw)
 
-	// Mark peer unhealthy and set an active (future) backoff; the outer check
-	// on line 241 will NOT catch it (backoff map entry exists AND now.Before(until) is true,
-	// so it fires the outer continue). To reach the inner continue, we need a peer where
-	// the outer condition is false but inner is true: outer: backoff exists AND future →
-	// that already fires outer continue. The inner branch is only reachable when:
-	//   outer condition: false (either no backoff entry, or backoff has expired)
-	//   inner condition: health[p] = false AND backoff exists AND future
-	// Set up: health=false, backoff entry = future, but do NOT add to outer backoff map
-	// so that the outer check passes. Wait – outer and inner use the same r.backoff map.
-	// Re-reading: outer fires when backoff entry exists AND now.Before(until). The inner
-	// branch runs only if peer survived the outer check (meaning outer was false).
-	// Outer is false when: no backoff entry OR backoff has expired.
-	// Inner then checks health[p] = false AND (backoff exists AND now.Before(until)).
-	// Contradition: outer false means no active backoff → inner's backoff check also false.
-	// So the inner continue is indeed dead code when outer uses the same map.
-	// Skip this variant; just confirm HealthyPeers_Recovery already covers the recovery path.
 	r.mu.Lock()
 	r.health["peer:5000"] = false
-	// Use expired backoff → outer check is false → peer is included despite health=false
-	// This is the "recovery" scenario already tested in HealthyPeers_Recovery.
-	r.backoff["peer:5000"] = time.Now().Add(-1 * time.Second)
+	r.backoff["peer:5000"] = time.Now().Add(-1 * time.Second) // expired
 	r.mu.Unlock()
 
 	peers := r.HealthyPeers()
