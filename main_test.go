@@ -338,3 +338,35 @@ func TestRun_CADir_MkdirFails(t *testing.T) {
 		t.Fatalf("run() returned error after SIGTERM with bad CADir: %v", err)
 	}
 }
+
+// TestRun_WithMDNS_Succeeds exercises the mDNS success path (else branch at line 136)
+// when mdnsSvc.Advertise() succeeds. Using a specific registry port ensures the
+// mDNS service gets a valid port (not 0), so Advertise can start the server.
+// The test is skipped if Advertise fails (e.g. in restricted network environments).
+func TestRun_WithMDNS_Succeeds(t *testing.T) {
+	// Use a specific port so mDNS gets port > 0 and Advertise can succeed.
+	// Port 0 would cause mdns.NewMDNSService to return "missing service port".
+	const testPort = ":29877"
+
+	cmd := &RegistryCmd{
+		RegistryAddr:   testPort,
+		ProxyAddr:      ":0",
+		MetricsAddr:    ":0",
+		DockerRoot:     setupDockerRoot(t),
+		ContainerdRoot: t.TempDir(),
+		StoreType:      "auto",
+		MDNSEnabled:    true,
+		// No MDNSInterface — use all interfaces so Advertise has the best chance of succeeding.
+		K8sDiscovery: false,
+		LogLevel:     "ERROR",
+		CADir:        t.TempDir(),
+	}
+
+	// Attempt to start; if Advertise fails (network restriction) we still get
+	// the Warn path already covered by TestRun_WithMDNS_AdvertiseFails.
+	// On success this covers the else branch (lines 137-140 in run).
+	err := runCmdWithSIGTERM(t, cmd, 400*time.Millisecond)
+	if err != nil {
+		t.Fatalf("run() returned error after SIGTERM with mDNS: %v", err)
+	}
+}

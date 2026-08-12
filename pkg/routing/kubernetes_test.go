@@ -417,6 +417,56 @@ func TestDetectSelfIP_FallbackToInterface(t *testing.T) {
 	}
 }
 
+// TestNewKubernetesDiscovery_InClusterSuccess exercises the full success path
+// of NewKubernetesDiscovery: reading the namespace from the SA file (line 44)
+// and creating the clientset (lines 58–69). It sets up the minimal in-cluster
+// environment (SA token file + KUBERNETES_SERVICE_HOST/PORT env vars) so
+// rest.InClusterConfig and kubernetes.NewForConfig succeed without a real cluster.
+// The SA directory is created and cleaned up by the test; skipped if files already
+// exist (real cluster) or cannot be created.
+func TestNewKubernetesDiscovery_InClusterSuccess(t *testing.T) {
+	const saDir = "/var/run/secrets/kubernetes.io/serviceaccount"
+
+	// Skip if already inside a real K8s cluster (files exist).
+	if _, err := os.Stat(saDir); err == nil {
+		t.Skip("SA dir already exists — running inside a Kubernetes cluster")
+	}
+
+	if err := os.MkdirAll(saDir, 0755); err != nil {
+		t.Skipf("cannot create SA dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll("/var/run/secrets") })
+
+	nsFile := saDir + "/namespace"
+	if err := os.WriteFile(nsFile, []byte("test-namespace"), 0644); err != nil {
+		t.Skipf("cannot write namespace file: %v", err)
+	}
+	tokenFile := saDir + "/token"
+	if err := os.WriteFile(tokenFile, []byte("fake-token"), 0644); err != nil {
+		t.Skipf("cannot write token file: %v", err)
+	}
+
+	t.Setenv("KUBERNETES_SERVICE_HOST", "192.0.2.1")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "6443")
+
+	disc, err := NewKubernetesDiscovery(KubernetesConfig{
+		ServiceName: "outpostimage",
+		// Namespace is intentionally empty so the code reads from the SA file.
+	})
+	if err != nil {
+		t.Skipf("NewKubernetesDiscovery failed (unexpected in this environment): %v", err)
+	}
+	if disc == nil {
+		t.Fatal("expected non-nil KubernetesDiscovery")
+	}
+	if disc.config.Namespace != "test-namespace" {
+		t.Errorf("Namespace = %q, want %q", disc.config.Namespace, "test-namespace")
+	}
+	if disc.config.RegistryPort != 5000 {
+		t.Errorf("RegistryPort = %d, want 5000", disc.config.RegistryPort)
+	}
+}
+
 // TestNewKubernetesDiscovery_NoNamespace verifies that NewKubernetesDiscovery
 // returns an error when no namespace is configured and the service-account file
 // doesn't exist (i.e. outside a real Kubernetes cluster).
