@@ -483,6 +483,54 @@ func TestDockerStore_Subscribe_ContextCancel(t *testing.T) {
 	}
 }
 
+// TestDockerStore_Subscribe_InvalidDigestFilename verifies that files whose names are not
+// valid sha256 hex digests are silently skipped (both Create and Remove events).
+func TestDockerStore_Subscribe_InvalidDigestFilename(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ch, err := store.Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+
+	// Create a file with a non-hex name → digest.Parse("sha256:not-valid") fails → continue
+	invalidPath := filepath.Join(imagedbDir, "not-a-valid-digest-name")
+	if err := os.WriteFile(invalidPath, []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Then remove it → Remove event with invalid name → continue
+	if err := os.Remove(invalidPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a valid file so we can confirm the goroutine is still alive after skipping.
+	validHash := "dddd000000000000000000000000000000000000000000000000000000000001"
+	validPath := filepath.Join(imagedbDir, validHash)
+	if err := os.WriteFile(validPath, []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	validDgst := digest.Digest("sha256:" + validHash)
+	select {
+	case ev := <-ch:
+		if ev.Digest != validDgst {
+			t.Errorf("got event digest %s, want %s", ev.Digest, validDgst)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout: goroutine did not survive invalid digest filename")
+	}
+}
+
 // TestDockerStore_Subscribe_AddError verifies that Subscribe returns an error when the
 // imagedb directory does not exist (empty root).
 func TestDockerStore_Subscribe_AddError(t *testing.T) {
