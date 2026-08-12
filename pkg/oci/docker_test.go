@@ -1,8 +1,11 @@
 package oci
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -390,5 +393,141 @@ func TestDockerStore_Subscribe(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("timeout waiting for Subscribe event")
+	}
+}
+
+// TestDockerStore_Subscribe_RemoveEvent verifies that removing an imagedb file emits EventDelete.
+func TestDockerStore_Subscribe_RemoveEvent(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ch, err := store.Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+	newDigest := "cccc000000000000000000000000000000000000000000000000000000000000"
+	newFile := filepath.Join(imagedbDir, newDigest)
+	if err := os.WriteFile(newFile, []byte("{}"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// Drain the Create event.
+	select {
+	case ev := <-ch:
+		if ev.Type != EventCreate {
+			t.Errorf("expected Create event, got %v", ev.Type)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for Create event")
+	}
+
+	// Remove the file to trigger EventDelete.
+	if err := os.Remove(newFile); err != nil {
+		t.Fatalf("Remove failed: %v", err)
+	}
+
+	select {
+	case ev := <-ch:
+		if ev.Type != EventDelete {
+			t.Errorf("expected Delete event, got %v", ev.Type)
+		}
+		wantDgst := digest.Digest("sha256:" + newDigest)
+		if ev.Digest != wantDgst {
+			t.Errorf("event digest = %v, want %v", ev.Digest, wantDgst)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for Delete event")
+	}
+}
+
+// TestDockerStore_Subscribe_ContextCancel verifies that cancelling the context closes the event channel.
+func TestDockerStore_Subscribe_ContextCancel(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch, err := store.Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+
+	cancel()
+
+	// After context cancel the goroutine should exit and close ch.
+	select {
+	case _, ok := <-ch:
+		if ok {
+			// Drain any buffered events then verify channel closes.
+			select {
+			case _, ok2 := <-ch:
+				if ok2 {
+					t.Error("channel still open after context cancel")
+				}
+			case <-time.After(3 * time.Second):
+				t.Error("channel not closed after context cancel")
+			}
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("channel not closed after context cancel")
+	}
+}
+
+// TestDockerStore_Subscribe_AddError verifies that Subscribe returns an error when the
+// imagedb directory does not exist (empty root).
+func TestDockerStore_Subscribe_AddError(t *testing.T) {
+	root := t.TempDir() // empty root, no imagedb directory
+	store := NewDockerStore(root)
+	_ = store.Init(context.Background())
+
+	_, err := store.Subscribe(context.Background())
+	if err == nil {
+		t.Fatal("expected error when imagedb directory does not exist")
+	}
+}
+
+// TestTarDirectory_WithSymlink verifies that tarDirectory handles symlinks correctly.
+func TestTarDirectory_WithSymlink(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a regular file and a symlink to it.
+	if err := os.WriteFile(filepath.Join(dir, "regular"), []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "regular"), filepath.Join(dir, "link")); err != nil {
+		t.Skip("symlinks not supported on this filesystem")
+	}
+
+	var buf bytes.Buffer
+	if err := tarDirectory(&buf, dir); err != nil {
+		t.Fatalf("tarDirectory failed: %v", err)
+	}
+
+	tr := tar.NewReader(&buf)
+	var seenSymlink bool
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("reading tar: %v", err)
+		}
+		if hdr.Typeflag == tar.TypeSymlink {
+			seenSymlink = true
+		}
+	}
+	if !seenSymlink {
+		t.Error("expected symlink entry in tar archive")
 	}
 }
