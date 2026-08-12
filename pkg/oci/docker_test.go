@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1613,5 +1614,32 @@ func TestTarDirectory_WalkError(t *testing.T) {
 	err := tarDirectory(io.Discard, filepath.Join(t.TempDir(), "nonexistent-subdir"))
 	if err == nil {
 		t.Fatal("expected error when walk root does not exist")
+	}
+}
+
+// TestTarDirectory_SocketFile exercises the tar.FileInfoHeader error path in tarDirectory.
+// Unix sockets are not supported by archive/tar, so FileInfoHeader returns
+// "archive/tar: sockets not supported" when it encounters a socket file.
+// The listener must remain open because net.Listen on "unix" removes the socket
+// file when the listener is closed on Linux.
+func TestTarDirectory_SocketFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a regular file so the directory is not empty.
+	if err := os.WriteFile(filepath.Join(dir, "regular.txt"), []byte("hello"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a Unix domain socket inside the directory and keep it alive.
+	sockPath := filepath.Join(dir, "test.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Skipf("cannot create Unix socket: %v", err)
+	}
+	defer ln.Close()
+
+	err = tarDirectory(io.Discard, dir)
+	if err == nil {
+		t.Error("expected error when directory contains a Unix socket")
 	}
 }
