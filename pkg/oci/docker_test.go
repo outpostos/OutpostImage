@@ -497,6 +497,321 @@ func TestDockerStore_Subscribe_AddError(t *testing.T) {
 }
 
 // TestTarDirectory_WithSymlink verifies that tarDirectory handles symlinks correctly.
+// TestDockerStore_GetManifest_NotFound exercises the "manifest not found" error path in
+// GetManifest — a digest that is not in the store returns an error.
+func TestDockerStore_GetManifest_NotFound(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	unknown := digest.FromString("unknown-digest")
+	_, _, err := store.GetManifest(context.Background(), unknown)
+	if err == nil {
+		t.Fatal("expected error for unknown manifest")
+	}
+}
+
+// TestDockerStore_EnsureImageReady_AlreadyBuilt exercises the fast-path in ensureImageReady —
+// calling GetManifest twice for the same digest returns cached result without rebuilding.
+func TestDockerStore_EnsureImageReady_AlreadyBuilt(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	dgst, _ := store.Resolve(context.Background(), "nginx:latest")
+
+	// First call builds the manifest.
+	data1, _, err := store.GetManifest(context.Background(), dgst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Second call should hit the fast-path (alreadyBuilt) in ensureImageReady.
+	data2, _, err := store.GetManifest(context.Background(), dgst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data1) != string(data2) {
+		t.Error("expected identical manifest data on second call")
+	}
+}
+
+// TestDockerStore_GetBlob_RewrittenConfig exercises the rewrittenConfigs path in GetBlob —
+// after building a manifest, the rewritten config blob is accessible via GetBlob.
+func TestDockerStore_GetBlob_RewrittenConfig(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build manifest to populate rewrittenConfigs.
+	configDgst, _ := store.Resolve(context.Background(), "nginx:latest")
+	_, _, err := store.GetManifest(context.Background(), configDgst)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Find a rewritten config digest.
+	store.mu.RLock()
+	var rwDgst digest.Digest
+	for d := range store.rewrittenConfigs {
+		rwDgst = d
+		break
+	}
+	store.mu.RUnlock()
+	if rwDgst == "" {
+		t.Skip("no rewritten configs after manifest build")
+	}
+
+	// GetBlob on a rewritten config digest should succeed.
+	rc, size, err := store.GetBlob(context.Background(), rwDgst)
+	if err != nil {
+		t.Fatalf("GetBlob(rewrittenConfig) failed: %v", err)
+	}
+	defer rc.Close()
+	if size <= 0 {
+		t.Errorf("expected positive size, got %d", size)
+	}
+
+	// HasBlob should also report true for the rewritten config.
+	if !store.HasBlob(context.Background(), rwDgst) {
+		t.Error("HasBlob(rewrittenConfig) should return true")
+	}
+}
+
+// TestDockerStore_LoadRepositories_InvalidJSON exercises the json.Unmarshal error path
+// in loadRepositories — repositories.json contains malformed JSON → error returned.
+func TestDockerStore_LoadRepositories_InvalidJSON(t *testing.T) {
+	root := t.TempDir()
+	repoDir := filepath.Join(root, "image", "overlay2")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repoDir, "imagedb", "content", "sha256"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repoDir, "layerdb", "sha256"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "repositories.json"), []byte("not-json{"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err == nil {
+		t.Fatal("expected error for invalid repositories.json JSON")
+	}
+}
+
+// TestDockerStore_LoadRepositories_InvalidDigest exercises the digest.Parse error path
+// in loadRepositories — an invalid digest value is skipped with a warning.
+func TestDockerStore_LoadRepositories_InvalidDigest(t *testing.T) {
+	root := t.TempDir()
+	repoDir := filepath.Join(root, "image", "overlay2")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repoDir, "imagedb", "content", "sha256"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repoDir, "layerdb", "sha256"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	repos := `{"Repositories":{"nginx":{"nginx:latest":"not-a-valid-digest"}}}`
+	if err := os.WriteFile(filepath.Join(repoDir, "repositories.json"), []byte(repos), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	store.mu.RLock()
+	numTags := len(store.tags)
+	store.mu.RUnlock()
+	if numTags != 0 {
+		t.Fatalf("expected 0 tags (invalid digest skipped), got %d", numTags)
+	}
+}
+
+// TestDockerStore_ScanImageDB_InvalidEntry exercises the skip paths in scanImageDB — a
+// directory entry and a file with a non-hex name are both silently skipped.
+func TestDockerStore_ScanImageDB_InvalidEntry(t *testing.T) {
+	root := t.TempDir()
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+	if err := os.MkdirAll(imagedbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "image", "overlay2", "layerdb", "sha256"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// File with invalid name (not a sha256 hex)
+	if err := os.WriteFile(filepath.Join(imagedbDir, "not-a-valid-hash"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Subdirectory inside imagedb — should be skipped by entry.IsDir() guard
+	if err := os.MkdirAll(filepath.Join(imagedbDir, "subdir"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	repoPath := filepath.Join(root, "image", "overlay2", "repositories.json")
+	if err := os.WriteFile(repoPath, []byte(`{"Repositories":{}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	images, _ := store.ListImages(context.Background())
+	if len(images) != 0 {
+		t.Fatalf("expected 0 images from invalid/dir entries, got %d", len(images))
+	}
+}
+
+// TestDockerStore_ScanLayerDB_SkipPaths exercises skip paths in scanLayerDB:
+// a regular file (not a dir) is skipped, a dir without "diff" file is skipped,
+// a dir with invalid "diff" content is skipped, a dir without "cache-id" is skipped.
+func TestDockerStore_ScanLayerDB_SkipPaths(t *testing.T) {
+	root := t.TempDir()
+	layerdbDir := filepath.Join(root, "image", "overlay2", "layerdb", "sha256")
+	if err := os.MkdirAll(layerdbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A regular file in layerdb — should be skipped by !entry.IsDir() guard
+	if err := os.WriteFile(filepath.Join(layerdbDir, "somefile"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Dir without "diff" file — os.ReadFile("diff") fails → continue
+	noDiffDir := filepath.Join(layerdbDir, "aaaa000000000000000000000000000000000000000000000000000000000000")
+	if err := os.MkdirAll(noDiffDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Dir with invalid "diff" content — digest.Parse fails → continue
+	badDiffDir := filepath.Join(layerdbDir, "bbbb000000000000000000000000000000000000000000000000000000000000")
+	if err := os.MkdirAll(badDiffDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(badDiffDir, "diff"), []byte("not-a-digest"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Dir with valid "diff" but missing "cache-id" — os.ReadFile("cache-id") fails → continue
+	noCacheDir := filepath.Join(layerdbDir, "cccc000000000000000000000000000000000000000000000000000000000000")
+	if err := os.MkdirAll(noCacheDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	validDiffID := "sha256:aaaa000000000000000000000000000000000000000000000000000000000000"
+	if err := os.WriteFile(filepath.Join(noCacheDir, "diff"), []byte(validDiffID), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	repoPath := filepath.Join(root, "image", "overlay2", "repositories.json")
+	if err := os.WriteFile(repoPath, []byte(`{"Repositories":{}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	store.mu.RLock()
+	numLayers := len(store.layers)
+	store.mu.RUnlock()
+	// All entries should have been skipped
+	if numLayers != 0 {
+		t.Fatalf("expected 0 layers from skip paths, got %d", numLayers)
+	}
+}
+
+// TestDockerStore_Resolve_Normalizations exercises all four tag-normalization paths in
+// Resolve: docker.io/ prefix, library/ prefix strip, library/ prefix add, and
+// docker.io/library/ prefix add.
+func TestDockerStore_Resolve_Normalizations(t *testing.T) {
+	root := t.TempDir()
+
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+	if err := os.MkdirAll(imagedbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "image", "overlay2", "layerdb", "sha256"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	configData := []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}`)
+	configDigest := digest.FromBytes(configData)
+	if err := os.WriteFile(filepath.Join(imagedbDir, configDigest.Encoded()), configData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Store tags under every expected form so each normalization path has a match.
+	repos := map[string]any{
+		"Repositories": map[string]any{
+			"redis": map[string]string{
+				// docker.io/redis:7 → exercises docker.io prefix lookup
+				"docker.io/redis:7": configDigest.String(),
+			},
+			"alpine": map[string]string{
+				// alpine:3 → exercises strip-library/ lookup (resolve "library/alpine:3")
+				"alpine:3": configDigest.String(),
+			},
+			"debian": map[string]string{
+				// library/debian:12 → exercises add-library/ lookup (resolve "debian:12")
+				"library/debian:12": configDigest.String(),
+			},
+			"ubuntu": map[string]string{
+				// docker.io/library/ubuntu:22.04 → exercises docker.io/library/ lookup
+				"docker.io/library/ubuntu:22.04": configDigest.String(),
+			},
+		},
+	}
+	reposData, _ := json.Marshal(repos)
+	if err := os.WriteFile(filepath.Join(root, "image", "overlay2", "repositories.json"), reposData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		ref     string
+		wantErr bool
+	}{
+		{"redis:7", false},           // → docker.io/redis:7 (docker.io prefix add)
+		{"library/alpine:3", false},  // → alpine:3 (library/ strip)
+		{"debian:12", false},         // → library/debian:12 (library/ add)
+		{"ubuntu:22.04", false},      // → docker.io/library/ubuntu:22.04 (docker.io/library/ add)
+		{"nope:1.0", true},           // all normalizations fail
+	}
+
+	for _, tt := range tests {
+		dgst, err := store.Resolve(context.Background(), tt.ref)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("Resolve(%q): expected error, got none (dgst=%v)", tt.ref, dgst)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("Resolve(%q): unexpected error: %v", tt.ref, err)
+			continue
+		}
+		if dgst == "" {
+			t.Errorf("Resolve(%q): got empty digest", tt.ref)
+		}
+	}
+}
+
 func TestTarDirectory_WithSymlink(t *testing.T) {
 	dir := t.TempDir()
 
