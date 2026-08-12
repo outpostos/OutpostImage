@@ -467,6 +467,36 @@ func TestNewKubernetesDiscovery_NoInClusterConfig(t *testing.T) {
 	}
 }
 
+// TestKubernetesDiscovery_WatchCallError exercises the error path in watchEndpoints
+// when the Watch API call itself returns an error (line 127: "watch endpoints: %w").
+func TestKubernetesDiscovery_WatchCallError(t *testing.T) {
+	initialEP := &corev1.Endpoints{
+		ObjectMeta: metav1.ObjectMeta{Name: "outpostimage", Namespace: "default"},
+		Subsets: []corev1.EndpointSubset{
+			{Addresses: []corev1.EndpointAddress{{IP: "10.0.0.2"}}},
+		},
+	}
+
+	client := fake.NewSimpleClientset(initialEP)
+	// Make the Watch call return an error; Get still succeeds (prepended = first match wins).
+	client.PrependWatchReactor("*", func(_ ktesting.Action) (bool, watch.Interface, error) {
+		return true, nil, fmt.Errorf("simulated watch API error")
+	})
+
+	kd := NewKubernetesDiscoveryWithClient(KubernetesConfig{
+		ServiceName:    "outpostimage",
+		Namespace:      "default",
+		RegistryPort:   5000,
+		ResyncInterval: 1 * time.Hour,
+	}, client, "10.0.0.1")
+
+	pw := NewPeerWatcher(nil)
+	err := kd.watchEndpoints(context.Background(), pw)
+	if err == nil {
+		t.Error("expected error when Watch API call fails")
+	}
+}
+
 // TestKubernetesDiscovery_WatchChannelClosed exercises the "watch channel closed"
 // error path in watchEndpoints and the subsequent retry logic in Discover.
 func TestKubernetesDiscovery_WatchChannelClosed(t *testing.T) {
