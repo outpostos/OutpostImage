@@ -582,6 +582,30 @@ func TestHandleMITM_NonOCIForwardsToUpstream(t *testing.T) {
 	}
 }
 
+// TestNewProxy_WithCertManager covers the len(certMgr) > 0 branch in NewProxy.
+func TestNewProxy_WithCertManager(t *testing.T) {
+	cm, err := NewCertManager("")
+	if err != nil {
+		t.Fatalf("NewCertManager: %v", err)
+	}
+	proxy := NewProxy(nil, cm)
+	if proxy.certMgr != cm {
+		t.Error("certMgr should be set on the proxy")
+	}
+}
+
+// TestHandleHTTP_RoundTripError covers the http.DefaultTransport.RoundTrip error path in handleHTTP.
+// Pointing to port 1 (always refused) forces a dial error.
+func TestHandleHTTP_RoundTripError(t *testing.T) {
+	proxy := NewProxy(nil)
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:1/v2/test", nil)
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d (BadGateway on RoundTrip error)", rec.Code, http.StatusBadGateway)
+	}
+}
+
 // TestForwardToUpstream_Success exercises the full happy path: dial, write request, read response.
 func TestForwardToUpstream_Success(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -169,6 +169,37 @@ func TestNewParallelFetcher_Defaults(t *testing.T) {
 	}
 }
 
+// TestFetchSingle_NonOKStatus covers the "unexpected status" error return in fetchSingle.
+func TestFetchSingle_NonOKStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	pf := NewParallelFetcher(DefaultChunkSize, DefaultParallelism)
+	peer := strings.TrimPrefix(srv.URL, "http://")
+	_, err := pf.fetchSingle(context.Background(), peer, "/v2/test/blobs/sha256:abc")
+	if err == nil {
+		t.Error("fetchSingle: expected error for non-200 status")
+	}
+}
+
+// TestFetchChunk_NonOKStatus covers the "unexpected status" error return in fetchChunk
+// when the server returns neither 200 nor 206.
+func TestFetchChunk_NonOKStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	pf := NewParallelFetcher(DefaultChunkSize, DefaultParallelism)
+	peer := strings.TrimPrefix(srv.URL, "http://")
+	_, err := pf.fetchChunk(context.Background(), peer, "/v2/test/blobs/sha256:abc", 0, 100)
+	if err == nil {
+		t.Error("fetchChunk: expected error for non-206/200 status")
+	}
+}
+
 func TestParallelFetcher_StreamFetch(t *testing.T) {
 	data := []byte("stream test blob")
 	srv := createTestBlobServer(t, data)

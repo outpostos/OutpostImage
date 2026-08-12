@@ -3,6 +3,8 @@ package proxy
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -128,5 +130,52 @@ func TestCertManager_TLSConfig(t *testing.T) {
 	}
 	if len(tlsConfig.Certificates) != 1 {
 		t.Fatal("expected 1 certificate in TLS config")
+	}
+}
+
+// TestLoadCA_InvalidCertPEM covers the "block == nil" error path in loadCA when
+// the ca.crt file exists but contains no valid PEM block.
+func TestLoadCA_InvalidCertPEM(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), []byte("not a valid pem"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// ca.key not needed; error fires on cert PEM decode
+	if err := os.WriteFile(filepath.Join(dir, "ca.key"), []byte("not a key either"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cm := &CertManager{cache: make(map[string]*tls.Certificate)}
+	if err := cm.loadCA(dir); err == nil {
+		t.Error("expected error for invalid cert PEM block")
+	}
+}
+
+// TestLoadCA_InvalidKeyPEM covers the "block == nil" error path in loadCA when
+// ca.crt is valid PEM but ca.key contains no valid PEM block.
+func TestLoadCA_InvalidKeyPEM(t *testing.T) {
+	dir := t.TempDir()
+	// Generate a real CA so we have a valid ca.crt on disk
+	if _, err := NewCertManager(dir); err != nil {
+		t.Fatalf("NewCertManager: %v", err)
+	}
+	// Overwrite ca.key with non-PEM content to trigger the key block == nil path
+	if err := os.WriteFile(filepath.Join(dir, "ca.key"), []byte("not a key pem"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cm := &CertManager{cache: make(map[string]*tls.Certificate)}
+	if err := cm.loadCA(dir); err == nil {
+		t.Error("expected error for invalid key PEM block")
+	}
+}
+
+// TestLoadCA_MissingFiles covers the os.ReadFile error path in loadCA when neither
+// ca.crt nor ca.key exists in the given directory.
+func TestLoadCA_MissingFiles(t *testing.T) {
+	dir := t.TempDir() // empty — no ca.crt or ca.key
+	cm := &CertManager{cache: make(map[string]*tls.Certificate)}
+	if err := cm.loadCA(dir); err == nil {
+		t.Error("expected error for missing ca.crt")
 	}
 }
