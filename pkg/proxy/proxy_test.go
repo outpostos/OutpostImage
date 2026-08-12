@@ -594,6 +594,22 @@ func TestNewProxy_WithCertManager(t *testing.T) {
 	}
 }
 
+// TestHandleHTTP_NewRequestError covers the http.NewRequestWithContext error path in
+// handleHTTP. A null byte injected into r.URL.Opaque makes r.URL.String() produce a URL
+// containing a control character, which url.Parse rejects.
+func TestHandleHTTP_NewRequestError(t *testing.T) {
+	proxy := NewProxy(nil)
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/v2/path", nil)
+	// Inject a null byte via Opaque so String() produces "http:/v2/path\x00null"
+	// (scheme + ":" + opaque), which url.Parse rejects as an invalid control character.
+	req.URL.Opaque = "/v2/path\x00null"
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+}
+
 // TestHandleHTTP_RoundTripError covers the http.DefaultTransport.RoundTrip error path in handleHTTP.
 // Pointing to port 1 (always refused) forces a dial error.
 func TestHandleHTTP_RoundTripError(t *testing.T) {
