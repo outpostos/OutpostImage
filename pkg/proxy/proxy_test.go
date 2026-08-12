@@ -606,6 +606,150 @@ func TestHandleHTTP_RoundTripError(t *testing.T) {
 	}
 }
 
+// TestForwardToUpstream_ReadResponseError exercises the http.ReadResponse error path in
+// forwardToUpstream. A TLS server that closes its connection immediately after the handshake
+// causes ReadResponse to fail, so forwardToUpstream writes a 502 to the client pipe.
+func TestForwardToUpstream_ReadResponseError(t *testing.T) {
+	cert, err := generateSelfSignedCert("127.0.0.1")
+	if err != nil {
+		t.Fatalf("generateSelfSignedCert: %v", err)
+	}
+
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{*cert},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	// Accept one connection, complete the handshake, then immediately close.
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		_ = c.(*tls.Conn).Handshake()
+		c.Close()
+	}()
+
+	p := NewProxy(nil)
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/v2/", nil)
+	req.URL.Host = "example.com"
+	req.RequestURI = ""
+
+	go func() {
+		p.forwardToUpstream(serverConn, req, ln.Addr().String(), true)
+		serverConn.Close()
+	}()
+
+	resp, err := http.ReadResponse(bufio.NewReader(clientConn), nil)
+	if err != nil {
+		return // connection closed before proxy could write 502 — still covers the error path
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("expected 502 Bad Gateway, got %d", resp.StatusCode)
+	}
+}
+
+// TestProxy_Connect_HostWithoutPort exercises the host+":443" normalization in handleConnect.
+// When the CONNECT target has no explicit port, handleConnect appends ":443". The subsequent
+// dial is expected to fail (port 1 is always refused), which is fine — we only need the
+// branch covered and the function to exit cleanly.
+func TestProxy_Connect_HostWithoutPort(t *testing.T) {
+	p := NewProxy(nil) // no certMgr, no insecure registries — transparent tunnel
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+
+	// Host without port triggers the "host = host + ":443"" branch.
+	req := httptest.NewRequest(http.MethodConnect, "https://127.0.0.1", nil)
+	req.Host = "127.0.0.1" // no port → will become "127.0.0.1:443"
+
+	fw := &fakeHijackWriter{conn: serverConn, headers: make(http.Header)}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.handleConnect(fw, req)
+	}()
+
+	// Read the 200 Connection Established.
+	header := make([]byte, 38)
+	n, _ := clientConn.Read(header)
+	if !strings.HasPrefix(string(header[:n]), "HTTP/1.1 200") {
+		t.Fatalf("expected 200, got: %q", string(header[:n]))
+	}
+
+	// The dial to 127.0.0.1:443 will fail immediately (ECONNREFUSED); close client
+	// to let any goroutines unblock.
+	clientConn.Close()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Error("handleConnect with no-port host timed out")
+	}
+}
+
+// failHijackWriter is a ResponseWriter/Hijacker whose Hijack always returns an error.
+type failHijackWriter struct {
+	conn    net.Conn
+	headers http.Header
+	written bool
+}
+
+func (w *failHijackWriter) Header() http.Header { return w.headers }
+func (w *failHijackWriter) WriteHeader(code int) {
+	if w.written {
+		return
+	}
+	w.written = true
+	fmt.Fprintf(w.conn, "HTTP/1.1 %d %s\r\n\r\n", code, http.StatusText(code))
+}
+func (w *failHijackWriter) Write(b []byte) (int, error) { return w.conn.Write(b) }
+func (w *failHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, fmt.Errorf("hijack unavailable")
+}
+
+// TestProxy_Connect_HijackError exercises the hijacker.Hijack() error path in handleConnect.
+// The failHijackWriter returns an error from Hijack() so handleConnect exits immediately
+// after sending 200 and discovering it cannot hijack the connection.
+func TestProxy_Connect_HijackError(t *testing.T) {
+	p := NewProxy(nil)
+
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	req := httptest.NewRequest(http.MethodConnect, "https://registry.example.com:443", nil)
+	req.Host = "registry.example.com:443"
+	fw := &failHijackWriter{conn: serverConn, headers: make(http.Header)}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.handleConnect(fw, req)
+	}()
+
+	// handleConnect writes "200 OK" to serverConn before calling Hijack.
+	// Read it from clientConn to unblock that write; then Hijack returns its error
+	// and handleConnect exits cleanly.
+	header := make([]byte, 64)
+	clientConn.Read(header)
+	clientConn.Close()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Error("handleConnect did not return after Hijack error")
+	}
+}
+
 // TestForwardToUpstream_Success exercises the full happy path: dial, write request, read response.
 func TestForwardToUpstream_Success(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

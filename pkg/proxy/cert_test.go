@@ -3,6 +3,7 @@ package proxy
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"os"
 	"path/filepath"
 	"testing"
@@ -218,6 +219,72 @@ func TestSaveCA_KeyWriteError(t *testing.T) {
 
 	if err := cm.saveCA(dir); err == nil {
 		t.Error("expected error when ca.key path is a directory")
+	}
+}
+
+// TestLoadCA_MissingKeyFile covers the os.ReadFile(ca.key) error path in loadCA
+// when ca.crt exists but ca.key is absent.
+func TestLoadCA_MissingKeyFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write only ca.crt (no ca.key).
+	cm := &CertManager{cache: make(map[string]*tls.Certificate)}
+	if err := cm.generateCA(); err != nil {
+		t.Fatalf("generateCA: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), cm.CACertPEM(), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cm2 := &CertManager{cache: make(map[string]*tls.Certificate)}
+	if err := cm2.loadCA(dir); err == nil {
+		t.Error("expected error when ca.key is missing")
+	}
+}
+
+// TestLoadCA_InvalidCertDER covers the x509.ParseCertificate error path in loadCA
+// when ca.crt contains a valid PEM block but non-DER certificate bytes.
+func TestLoadCA_InvalidCertDER(t *testing.T) {
+	dir := t.TempDir()
+
+	// Valid PEM structure, but invalid DER content — ParseCertificate will fail.
+	invalidCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not valid der")})
+	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), invalidCertPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	// ca.key just needs to exist so ReadFile succeeds; cert parse fires first.
+	if err := os.WriteFile(filepath.Join(dir, "ca.key"), []byte("placeholder"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cm := &CertManager{cache: make(map[string]*tls.Certificate)}
+	if err := cm.loadCA(dir); err == nil {
+		t.Error("expected error for invalid cert DER bytes")
+	}
+}
+
+// TestLoadCA_InvalidKeyDER covers the x509.ParseECPrivateKey error path in loadCA
+// when ca.crt is a valid certificate but ca.key PEM contains non-EC-key DER bytes.
+func TestLoadCA_InvalidKeyDER(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write a valid ca.crt.
+	cm := &CertManager{cache: make(map[string]*tls.Certificate)}
+	if err := cm.generateCA(); err != nil {
+		t.Fatalf("generateCA: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), cm.CACertPEM(), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Valid PEM block, invalid DER content — ParseECPrivateKey will fail.
+	invalidKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: []byte("not valid ec key der")})
+	if err := os.WriteFile(filepath.Join(dir, "ca.key"), invalidKeyPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cm2 := &CertManager{cache: make(map[string]*tls.Certificate)}
+	if err := cm2.loadCA(dir); err == nil {
+		t.Error("expected error for invalid EC key DER bytes")
 	}
 }
 
