@@ -1158,3 +1158,169 @@ func TestDetectMediaType_OctetStream(t *testing.T) {
 		t.Errorf("detectMediaType() = %q, want %q", got, "application/octet-stream")
 	}
 }
+
+// TestContainerdStore_GetManifest_NotFound covers the "not in blobs map" error path
+// in GetManifest when the requested digest has never been indexed.
+func TestContainerdStore_GetManifest_NotFound(t *testing.T) {
+	store := NewContainerdStore(t.TempDir())
+	unknownDigest := digest.FromString("not-in-blobs")
+	_, _, err := store.GetManifest(context.Background(), unknownDigest)
+	if err == nil {
+		t.Fatal("expected error for unknown manifest digest")
+	}
+}
+
+// TestContainerdStore_GetBlob_NotFound covers the "not in blobs map" error path
+// in GetBlob when the requested digest has never been indexed.
+func TestContainerdStore_GetBlob_NotFound(t *testing.T) {
+	store := NewContainerdStore(t.TempDir())
+	unknownDigest := digest.FromString("not-in-blobs")
+	_, _, err := store.GetBlob(context.Background(), unknownDigest)
+	if err == nil {
+		t.Fatal("expected error for unknown blob digest")
+	}
+}
+
+// TestContainerdStore_Resolve_NotFound covers the "all candidates miss" error path
+// in Resolve when the reference has valid format but doesn't exist in the tags map.
+func TestContainerdStore_Resolve_NotFound(t *testing.T) {
+	store := NewContainerdStore(t.TempDir())
+	// "missing:image" is a valid ref (has colon) but won't be in any tags.
+	_, err := store.Resolve(context.Background(), "missing:image")
+	if err == nil {
+		t.Fatal("expected error when tag not found in store")
+	}
+}
+
+// TestContainerdTagCandidates_BareImage covers the "docker.io/library/" candidate
+// generation path in containerdTagCandidates for a bare image name (no slash,
+// no registry host). Example: "nginx:latest" → adds "docker.io/library/nginx:latest".
+func TestContainerdTagCandidates_BareImage(t *testing.T) {
+	candidates, err := containerdTagCandidates("nginx:latest")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Expect "docker.io/library/nginx:latest" to be generated.
+	wantCandidate := "docker.io/library/nginx:latest"
+	found := false
+	for _, c := range candidates {
+		if c == wantCandidate {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected %q in candidates for bare image name, got %v", wantCandidate, candidates)
+	}
+}
+
+// TestContainerdStore_Subscribe_WriteEvent exercises the "else { continue }" path in the
+// Subscribe debounce goroutine for non-Create/Remove fsnotify events (e.g., Write).
+func TestContainerdStore_Subscribe_WriteEvent(t *testing.T) {
+	store, root := setupContainerdTestStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
+	entries, err := os.ReadDir(blobDir)
+	if err != nil || len(entries) == 0 {
+		t.Skip("no blobs to modify")
+	}
+	blobFile := filepath.Join(blobDir, entries[0].Name())
+
+	ch, err := store.Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	// Let the watcher start.
+	time.Sleep(100 * time.Millisecond)
+
+	// Write to an existing blob file — triggers a Write event (not Create/Remove).
+	// The goroutine should hit the "else { continue }" path and not emit an event.
+	// Then create a new blob to confirm the channel is still alive.
+	if err := os.WriteFile(blobFile, []byte("updated content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait a short time — Write events should be ignored (no channel send).
+	time.Sleep(100 * time.Millisecond)
+
+	// Now create a new blob to verify the goroutine is still running.
+	newContent := []byte("new blob after write event")
+	newDigest := digest.FromBytes(newContent)
+	newHash := newDigest.Encoded()
+	if err := os.WriteFile(filepath.Join(blobDir, newHash), newContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case event, ok := <-ch:
+		if !ok {
+			t.Fatal("channel closed unexpectedly")
+		}
+		if event.Type != EventCreate {
+			t.Errorf("expected EventCreate after Write, got %v", event.Type)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("timeout waiting for EventCreate after Write event")
+	}
+}
+
+// TestContainerdStore_Subscribe_Debounce exercises the timer.Stop() path in the
+// Subscribe debounce goroutine by sending two file events in rapid succession.
+// The second event arrives before the debounce timer fires, causing timer.Stop().
+func TestContainerdStore_Subscribe_Debounce(t *testing.T) {
+	store, root := setupContainerdTestStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
+
+	ch, err := store.Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	// Let the watcher start.
+	time.Sleep(100 * time.Millisecond)
+
+	// Write two blobs in rapid succession — the second triggers timer.Stop().
+	blob1 := []byte("debounce blob one")
+	dgst1 := digest.FromBytes(blob1)
+	if err := os.WriteFile(filepath.Join(blobDir, dgst1.Encoded()), blob1, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Minimal sleep to ensure the first event is in-flight but timer hasn't fired.
+	time.Sleep(10 * time.Millisecond)
+
+	blob2 := []byte("debounce blob two")
+	dgst2 := digest.FromBytes(blob2)
+	if err := os.WriteFile(filepath.Join(blobDir, dgst2.Encoded()), blob2, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for both events to arrive (after debounce window).
+	received := 0
+	deadline := time.After(5 * time.Second)
+	for received < 2 {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				t.Fatal("channel closed unexpectedly")
+			}
+			received++
+		case <-deadline:
+			t.Errorf("timeout waiting for debounced events; got %d/2", received)
+			return
+		}
+	}
+}

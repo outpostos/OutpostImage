@@ -1264,3 +1264,219 @@ func TestDockerStore_BuildImageManifest_MissingLayerPath(t *testing.T) {
 		t.Fatal("expected error: manifest not found when layer diffPath is empty")
 	}
 }
+
+// TestDockerStore_GetBlob_ReadError exercises the os.ReadFile error path in GetBlob when
+// a blob path is in the index but the file no longer exists on disk.
+func TestDockerStore_GetBlob_ReadError(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inject a blob path that points to a non-existent file.
+	ghostDigest := digest.FromString("ghost-read-error")
+	store.mu.Lock()
+	store.blobs[ghostDigest] = "/nonexistent/path/to/blob-file"
+	store.mu.Unlock()
+
+	_, _, err := store.GetBlob(context.Background(), ghostDigest)
+	if err == nil {
+		t.Fatal("expected error when blob file cannot be read")
+	}
+}
+
+// TestTarDirectory_WithSubdirectory verifies that tarDirectory archives subdirectory
+// entries without error, exercising the `return nil` path for directory entries
+// inside the Walk callback.
+func TestTarDirectory_WithSubdirectory(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a subdirectory.
+	subDir := filepath.Join(dir, "subdir")
+	if err := os.Mkdir(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "file.txt"), []byte("hello"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := tarDirectory(&buf, dir); err != nil {
+		t.Fatalf("tarDirectory failed: %v", err)
+	}
+
+	tr := tar.NewReader(&buf)
+	var seenDir, seenFile bool
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("reading tar: %v", err)
+		}
+		if hdr.Typeflag == tar.TypeDir {
+			seenDir = true
+		}
+		if hdr.Name == "subdir/file.txt" {
+			seenFile = true
+		}
+	}
+	if !seenDir {
+		t.Error("expected directory entry in tar archive")
+	}
+	if !seenFile {
+		t.Error("expected subdir/file.txt entry in tar archive")
+	}
+}
+
+// TestBuildImageManifest_RootfsUnmarshalError exercises the early return in buildImageManifest
+// when the "rootfs" key is present but not a valid JSON object that can unmarshal into the struct.
+func TestBuildImageManifest_RootfsUnmarshalError(t *testing.T) {
+	root := t.TempDir()
+
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+	if err := os.MkdirAll(imagedbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a config where "rootfs" is a string (not an object) — will fail json.Unmarshal.
+	configData := []byte(`{"rootfs":"not-an-object"}`)
+	dgst := digest.FromBytes(configData)
+	if err := os.WriteFile(filepath.Join(imagedbDir, dgst.Encoded()), configData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// buildImageManifest should return early; GetManifest should report not found.
+	_, _, err := store.GetManifest(context.Background(), dgst)
+	if err == nil {
+		t.Fatal("expected error when rootfs cannot be unmarshalled")
+	}
+}
+
+// TestBuildImageManifest_LayerComputeError exercises the slog.Warn + return path in
+// buildImageManifest when computeLayerTarDigest fails for a valid layer diffPath that
+// doesn't exist on disk.
+func TestBuildImageManifest_LayerComputeError(t *testing.T) {
+	root := t.TempDir()
+
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+	layerdbDir := filepath.Join(root, "image", "overlay2", "layerdb", "sha256")
+	if err := os.MkdirAll(imagedbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(layerdbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a diffID and the matching layer DB entry pointing to a non-existent diff dir.
+	diffID := "sha256:bbbb000000000000000000000000000000000000000000000000000000000001"
+	diffIDDigest, _ := digest.Parse(diffID)
+	chainID := diffIDDigest // For a single layer, chainID == diffID
+
+	layerDir := filepath.Join(layerdbDir, chainID.Encoded())
+	if err := os.MkdirAll(layerDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// cache-id file tells the store where the overlay2 diff dir is.
+	cacheID := "nonexistent-cache-id"
+	if err := os.WriteFile(filepath.Join(layerDir, "cache-id"), []byte(cacheID), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// diff file holds the diffID.
+	if err := os.WriteFile(filepath.Join(layerDir, "diff"), []byte(diffID), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The diff directory (overlay2/<cache-id>/diff) does NOT exist — tarDirectory will fail.
+	// We intentionally don't create filepath.Join(root, "overlay2", cacheID, "diff").
+
+	// Write a config referencing this diffID.
+	configData := []byte(`{"rootfs":{"type":"layers","diff_ids":["` + diffID + `"]}}`)
+	dgst := digest.FromBytes(configData)
+	if err := os.WriteFile(filepath.Join(imagedbDir, dgst.Encoded()), configData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// buildImageManifest hits computeLayerTarDigest, which fails → slog.Warn + return.
+	_, _, err := store.GetManifest(context.Background(), dgst)
+	if err == nil {
+		t.Fatal("expected error when layer tar digest computation fails")
+	}
+}
+
+// TestBuildImageManifest_ReadFileError covers the os.ReadFile error path in
+// buildImageManifest when the config blob is in the index but the file has been removed.
+func TestBuildImageManifest_ReadFileError(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inject a blob path that points to a non-existent file.
+	ghostDigest := digest.FromString("ghost-manifest-read-error")
+	store.mu.Lock()
+	store.blobs[ghostDigest] = "/nonexistent/path/config.json"
+	store.mu.Unlock()
+
+	_, _, err := store.GetManifest(context.Background(), ghostDigest)
+	if err == nil {
+		t.Fatal("expected error when config file cannot be read")
+	}
+}
+
+// TestBuildImageManifest_InvalidJSON covers the json.Unmarshal(data, &rawConfig) error
+// path in buildImageManifest when the config file contains non-JSON content.
+func TestBuildImageManifest_InvalidJSON(t *testing.T) {
+	root := t.TempDir()
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+	if err := os.MkdirAll(imagedbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a file with invalid JSON — scanImageDB silently ignores the unmarshal error
+	// but still registers the digest in ds.blobs.
+	configData := []byte("not valid json {{{")
+	dgst := digest.FromBytes(configData)
+	if err := os.WriteFile(filepath.Join(imagedbDir, dgst.Encoded()), configData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// buildImageManifest fails at json.Unmarshal(data, &rawConfig) → early return.
+	_, _, err := store.GetManifest(context.Background(), dgst)
+	if err == nil {
+		t.Fatal("expected error when config JSON is invalid")
+	}
+}
+
+// TestDockerStore_Resolve_NoColon covers the len(parts) != 2 early-return path in
+// Resolve when the reference contains no colon (no tag separator).
+func TestDockerStore_Resolve_NoColon(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := store.Resolve(context.Background(), "nginx")
+	if err == nil {
+		t.Fatal("expected error for ref with no colon")
+	}
+}

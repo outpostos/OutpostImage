@@ -1022,3 +1022,294 @@ func TestServeFetchedManifest_HEAD(t *testing.T) {
 		t.Error("missing Docker-Content-Digest header")
 	}
 }
+
+// TestHandleV2_NameUnknown exercises the final fallthrough in handleV2 when the
+// path matches neither /manifests/ nor /blobs/ patterns → NAME_UNKNOWN 404.
+func TestHandleV2_NameUnknown(t *testing.T) {
+	mux := newOCITestMux()
+
+	// A path like "library/nginx/unknown-endpoint" has no /manifests/ or /blobs/ segment.
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/unknown-endpoint", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&body)
+	errors, ok := body["errors"].([]any)
+	if !ok || len(errors) == 0 {
+		t.Fatal("expected OCI error response with errors array")
+	}
+	errObj := errors[0].(map[string]any)
+	if errObj["code"] != "NAME_UNKNOWN" {
+		t.Fatalf("error code = %v, want NAME_UNKNOWN", errObj["code"])
+	}
+}
+
+// TestServeFetchedManifest_EmptyContentType exercises the default mediaType branch in
+// serveFetchedManifest when the upstream response does not include a Content-Type header.
+func TestServeFetchedManifest_EmptyContentType(t *testing.T) {
+	manifest := []byte(`{"schemaVersion":2}`)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Intentionally omit Content-Type header.
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(manifest)
+	}))
+	defer upstream.Close()
+
+	store := newEmptyOCITestStore()
+	mux := newRegistryFallbackMux(store, WithUpstreamFallback(true), WithUpstreamRegistry(upstream.URL))
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/latest", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	// Default mediaType should be applied when Content-Type is absent.
+	if rec.Header().Get("Content-Type") == "" {
+		t.Error("expected non-empty Content-Type (defaulted)")
+	}
+}
+
+// TestParseRangeHeader_NoDash exercises the len(parts) != 2 path in parseRangeHeader
+// when the range spec contains no dash at all.
+func TestParseRangeHeader_NoDash(t *testing.T) {
+	start, end, ok := parseRangeHeader("bytes=1024", 2000)
+	if ok {
+		t.Errorf("expected false for range without dash, got start=%d end=%d", start, end)
+	}
+}
+
+// TestHandleGetBlob_RangeReadError exercises the io.ReadAll error path inside
+// handleGetBlob's range branch — triggered by a store whose GetBlob returns a
+// reader that fails on Read.
+func TestHandleGetBlob_RangeReadError(t *testing.T) {
+	blobDigest := digest.FromString("fail-on-read")
+	store := &ociMockStore{
+		manifests: map[digest.Digest][]byte{},
+		blobs:     map[digest.Digest][]byte{},
+		tags:      map[string]digest.Digest{},
+	}
+	// Override GetBlob to return a reader that always errors.
+	failStore := &failReadBlobStore{inner: store, failDigest: blobDigest}
+	mux := newRegistryFallbackMux(failStore, WithUpstreamFallback(false))
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/blobs/"+blobDigest.String(), nil)
+	req.Header.Set("Range", "bytes=0-9")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+// failReadBlobStore wraps ociMockStore and returns a fail-on-read body for a specific digest.
+type failReadBlobStore struct {
+	inner      *ociMockStore
+	failDigest digest.Digest
+}
+
+func (s *failReadBlobStore) Name() string { return "fail-read" }
+func (s *failReadBlobStore) ListImages(ctx context.Context) ([]oci.Image, error) {
+	return s.inner.ListImages(ctx)
+}
+func (s *failReadBlobStore) Resolve(ctx context.Context, ref string) (digest.Digest, error) {
+	return s.inner.Resolve(ctx, ref)
+}
+func (s *failReadBlobStore) GetManifest(ctx context.Context, dgst digest.Digest) ([]byte, string, error) {
+	return s.inner.GetManifest(ctx, dgst)
+}
+func (s *failReadBlobStore) GetBlob(_ context.Context, dgst digest.Digest) (io.ReadCloser, int64, error) {
+	if dgst == s.failDigest {
+		// Return a reader that fails on Read, with a positive size so the range is valid.
+		return &failReadBody{}, 100, nil
+	}
+	return s.inner.GetBlob(context.Background(), dgst)
+}
+func (s *failReadBlobStore) HasBlob(ctx context.Context, dgst digest.Digest) bool {
+	return s.inner.HasBlob(ctx, dgst)
+}
+func (s *failReadBlobStore) Subscribe(ctx context.Context) (<-chan oci.Event, error) {
+	return s.inner.Subscribe(ctx)
+}
+
+// TestRouteBlobMiss_UpstreamError exercises the FetchFromUpstream error path in
+// routeBlobMiss when the upstream URL is unreachable.
+func TestRouteBlobMiss_UpstreamError(t *testing.T) {
+	store := newEmptyOCITestStore()
+	// Use an invalid upstream address so FetchFromUpstream returns an error.
+	mux := newRegistryFallbackMux(store, WithUpstreamFallback(true), WithUpstreamRegistry("http://127.0.0.1:1"))
+
+	unknownDigest := "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/blobs/"+unknownDigest, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	// Should return 404 because upstream fetch failed and we fall back to the miss error.
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+// TestRouteManifestMiss_UpstreamError exercises the FetchFromUpstream error path in
+// routeManifestMiss when the upstream URL is unreachable.
+func TestRouteManifestMiss_UpstreamError(t *testing.T) {
+	store := newEmptyOCITestStore()
+	mux := newRegistryFallbackMux(store, WithUpstreamFallback(true), WithUpstreamRegistry("http://127.0.0.1:1"))
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/latest", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+// TestHandleGetManifest_ByDigest_RouteMissSuccess exercises the success path of
+// routeManifestMiss inside the digest-based manifest lookup — when the digest is not in
+// the store and not in cache, but upstream can serve it.
+func TestHandleGetManifest_ByDigest_RouteMissSuccess(t *testing.T) {
+	manifest := []byte(`{"schemaVersion":2}`)
+	manifestDigest := digest.FromBytes(manifest)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(manifest)
+	}))
+	defer upstream.Close()
+
+	store := newEmptyOCITestStore()
+	mux := newRegistryFallbackMux(store, WithUpstreamFallback(true), WithUpstreamRegistry(upstream.URL))
+
+	// Request by digest — not in store, not in cache → routeManifestMiss → upstream succeeds.
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/"+manifestDigest.String(), nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+// TestHandleGetManifest_ResolvedDigestGetManifestFails exercises the routeManifestMiss path
+// after tag Resolve succeeds but GetManifest fails (dgst-based miss routing with upstream).
+func TestHandleGetManifest_ResolvedDigestGetManifestFails(t *testing.T) {
+	manifest := []byte(`{"schemaVersion":2}`)
+	brokenDigest := digest.FromString("no-manifest-data")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(manifest)
+	}))
+	defer upstream.Close()
+
+	store := &ociMockStore{
+		manifests: map[digest.Digest][]byte{}, // tag resolves but manifest data missing
+		blobs:     map[digest.Digest][]byte{},
+		tags:      map[string]digest.Digest{"library/test:v1": brokenDigest},
+	}
+	mux := newRegistryFallbackMux(store, WithUpstreamFallback(true), WithUpstreamRegistry(upstream.URL))
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/test/manifests/v1", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+// TestServeFetchedBlob_ContentLength exercises the Content-Length fallback branch in
+// serveFetchedBlob when resp.ContentLength >= 0 but the response Header has no
+// Content-Length entry (so copyResponseHeaders won't set it).
+func TestServeFetchedBlob_ContentLength(t *testing.T) {
+	blobData := []byte("content-length test blob")
+	dgst := digest.FromBytes(blobData)
+
+	// Build a PeerFetchResponse with ContentLength set but no Content-Length header.
+	resp := &proxy.PeerFetchResponse{
+		StatusCode:    http.StatusOK,
+		Header:        make(http.Header), // no Content-Length in header
+		Body:          io.NopCloser(bytes.NewReader(blobData)),
+		ContentLength: int64(len(blobData)), // positive ContentLength
+	}
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/blobs/"+dgst.String(), nil)
+
+	serveFetchedBlob(w, r, resp, dgst)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if got := w.Header().Get("Content-Length"); got != fmt.Sprintf("%d", len(blobData)) {
+		t.Errorf("Content-Length = %q, want %q", got, fmt.Sprintf("%d", len(blobData)))
+	}
+}
+
+// TestServeFetchedManifest_EmptyContentType_Direct exercises the default mediaType branch
+// in serveFetchedManifest directly — when the response Header has no Content-Type set.
+func TestServeFetchedManifest_EmptyContentType_Direct(t *testing.T) {
+	manifest := []byte(`{"schemaVersion":2}`)
+	store := newEmptyOCITestStore()
+	h := NewOCIHandler(store)
+
+	// Build a PeerFetchResponse with no Content-Type header.
+	resp := &proxy.PeerFetchResponse{
+		StatusCode:    http.StatusOK,
+		Header:        make(http.Header), // no Content-Type
+		Body:          io.NopCloser(bytes.NewReader(manifest)),
+		ContentLength: int64(len(manifest)),
+	}
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/latest", nil)
+
+	if !h.serveFetchedManifest(w, r, resp) {
+		t.Error("expected true from serveFetchedManifest")
+	}
+	// Default mediaType should have been applied.
+	ct := w.Header().Get("Content-Type")
+	if ct != "application/vnd.docker.distribution.manifest.v2+json" {
+		t.Errorf("Content-Type = %q, want default manifest type", ct)
+	}
+}
+
+// TestHandleGetManifest_ResolvedDigestGetManifestFails_NoFallback exercises the
+// recordRegistryRead + writeOCIError path when tag Resolve succeeds but GetManifest
+// fails and upstreamFallback is disabled (routeManifestMiss returns false).
+func TestHandleGetManifest_ResolvedDigestGetManifestFails_NoFallback(t *testing.T) {
+	brokenDigest := digest.FromString("no-manifest-data")
+	store := &ociMockStore{
+		manifests: map[digest.Digest][]byte{}, // tag resolves but manifest data missing
+		blobs:     map[digest.Digest][]byte{},
+		tags:      map[string]digest.Digest{"library/test:v1": brokenDigest},
+	}
+	mux := newRegistryFallbackMux(store, WithUpstreamFallback(false))
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/test/manifests/v1", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&body)
+	errors, ok := body["errors"].([]any)
+	if !ok || len(errors) == 0 {
+		t.Fatal("expected OCI error response")
+	}
+	errObj := errors[0].(map[string]any)
+	if errObj["code"] != "MANIFEST_UNKNOWN" {
+		t.Fatalf("code = %v, want MANIFEST_UNKNOWN", errObj["code"])
+	}
+}
