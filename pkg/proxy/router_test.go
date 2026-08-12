@@ -705,6 +705,20 @@ func TestProxyToLocal_DoError(t *testing.T) {
 	}
 }
 
+// TestProxyToLocal_InvalidURL exercises the http.NewRequestWithContext error path in
+// proxyToLocal when the constructed URL has an invalid character in the host.
+func TestProxyToLocal_InvalidURL(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/v2/path", nil)
+	w := httptest.NewRecorder()
+	// "http:// invalid host" → peerSchemeAndAddr returns scheme="http", hostport=" invalid host"
+	// → localURL="http:// invalid host/v2/path" → NewRequestWithContext fails (space in host).
+	proxyToLocal(w, req, "http:// invalid host")
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+}
+
 // TestRequestRouter_LegacyP2P_Success exercises the legacy parallel-fetcher path in
 // RequestRouter. A mockLookupRouter (non-StaticRouter) causes HealthyPeersFromRouter to
 // return nil, bypassing the new P2P loop. Lookup returns a balancer with the peer;
@@ -902,6 +916,22 @@ func TestFetchFromUpstream_InvalidRegistryURL(t *testing.T) {
 	_, err := FetchFromUpstream(context.Background(), req, http.MethodGet, "")
 	if err == nil {
 		t.Error("expected error for invalid upstream registry URL")
+	}
+}
+
+// TestFetchFromUpstream_NewRequestError exercises the http.NewRequestWithContext error path
+// in FetchFromUpstream when the constructed targetURL contains an invalid control character.
+// We inject a null byte via r.URL.Opaque so that RequestURI() returns a path with \x00
+// which net/url rejects.
+func TestFetchFromUpstream_NewRequestError(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/v2/path", nil)
+	// Inject a null byte into the opaque path so RequestURI() returns an invalid URL segment.
+	req.URL.Opaque = "/v2/path\x00null"
+	req.Header.Set("X-Upstream-Registry", "registry.example.com")
+
+	_, err := FetchFromUpstream(context.Background(), req, http.MethodGet, "")
+	if err == nil {
+		t.Error("expected error for URL with null byte control character")
 	}
 }
 
