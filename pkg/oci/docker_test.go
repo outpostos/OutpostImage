@@ -1058,3 +1058,209 @@ func TestTarDirectory_WithSymlink(t *testing.T) {
 		t.Error("expected symlink entry in tar archive")
 	}
 }
+
+// TestDockerStore_Init_LoadRepositoriesError exercises the Init error path when
+// loadRepositories fails. Creating repositories.json as a directory makes os.ReadFile
+// return EISDIR (not IsNotExist), so loadRepositories propagates the error.
+func TestDockerStore_Init_LoadRepositoriesError(t *testing.T) {
+	root := t.TempDir()
+	// Create "repositories.json" as a subdirectory so os.ReadFile fails with EISDIR.
+	repoDir := filepath.Join(root, "image", "overlay2", "repositories.json")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err == nil {
+		t.Fatal("expected error when repositories.json is a directory")
+	}
+}
+
+// TestDockerStore_Init_ScanImageDBError_FileAsDir exercises the Init error path when
+// scanImageDB fails. Creating the imagedb sha256 path as a file makes os.ReadDir return
+// ENOTDIR (not IsNotExist), so scanImageDB propagates the error.
+func TestDockerStore_Init_ScanImageDBError_FileAsDir(t *testing.T) {
+	root := t.TempDir()
+	imagedbContent := filepath.Join(root, "image", "overlay2", "imagedb", "content")
+	if err := os.MkdirAll(imagedbContent, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// sha256 is a file, not a directory → os.ReadDir returns "not a directory"
+	if err := os.WriteFile(filepath.Join(imagedbContent, "sha256"), []byte("not-a-dir"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err == nil {
+		t.Fatal("expected error when imagedb sha256 path is a regular file")
+	}
+}
+
+// TestDockerStore_Init_ScanLayerDBError_FileAsDir exercises the Init error path when
+// scanLayerDB fails. Creating the layerdb sha256 path as a file makes os.ReadDir return
+// ENOTDIR (not IsNotExist), so scanLayerDB propagates the error.
+func TestDockerStore_Init_ScanLayerDBError_FileAsDir(t *testing.T) {
+	root := t.TempDir()
+	// Create valid imagedb so loadRepositories and scanImageDB both succeed.
+	if err := os.MkdirAll(filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	layerdbParent := filepath.Join(root, "image", "overlay2", "layerdb")
+	if err := os.MkdirAll(layerdbParent, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// sha256 is a file, not a directory → os.ReadDir returns "not a directory"
+	if err := os.WriteFile(filepath.Join(layerdbParent, "sha256"), []byte("not-a-dir"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err == nil {
+		t.Fatal("expected error when layerdb sha256 path is a regular file")
+	}
+}
+
+// TestDockerStore_ScanImageDB_ReadFileFails exercises the slog.Warn path in scanImageDB
+// when os.ReadFile fails after a valid-named entry is found. A symlink whose name is a
+// valid sha256 hex but that points to a directory causes os.ReadFile to return EISDIR.
+func TestDockerStore_ScanImageDB_ReadFileFails(t *testing.T) {
+	root := t.TempDir()
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+	if err := os.MkdirAll(imagedbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "image", "overlay2", "layerdb", "sha256"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "image", "overlay2", "repositories.json"),
+		[]byte(`{"Repositories":{}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a symlink named with a valid 64-char hex pointing to a directory.
+	// entry.IsDir() is false (symlink), digest.Parse succeeds, os.ReadFile fails (EISDIR).
+	subdir := filepath.Join(root, "subdir")
+	if err := os.MkdirAll(subdir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	validHex := "bbbb000000000000000000000000000000000000000000000000000000000000"
+	if err := os.Symlink(subdir, filepath.Join(imagedbDir, validHex)); err != nil {
+		t.Skipf("symlinks not supported on this filesystem: %v", err)
+	}
+
+	store := NewDockerStore(root)
+	// Init should succeed: the warning is logged but not returned as an error.
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatalf("Init should succeed despite ReadFile warning: %v", err)
+	}
+}
+
+// TestDockerStore_BuildImageManifest_InvalidRootFS exercises the early-return in
+// buildImageManifest when json.Unmarshal of rawConfig["rootfs"] fails. A config with no
+// "rootfs" key causes rawConfig["rootfs"] to be nil, making Unmarshal return an error.
+func TestDockerStore_BuildImageManifest_InvalidRootFS(t *testing.T) {
+	root := t.TempDir()
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+	if err := os.MkdirAll(imagedbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "image", "overlay2", "layerdb", "sha256"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "image", "overlay2", "repositories.json"),
+		[]byte(`{"Repositories":{}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Config without "rootfs" key → rawConfig["rootfs"] is nil → Unmarshal returns error.
+	configData := []byte(`{"architecture":"amd64","os":"linux"}`)
+	dgst := digest.FromBytes(configData)
+	if err := os.WriteFile(filepath.Join(imagedbDir, dgst.Encoded()), configData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// buildImageManifest hits the rootfs Unmarshal failure and returns early,
+	// so GetManifest returns "manifest not found".
+	_, _, err := store.GetManifest(context.Background(), dgst)
+	if err == nil {
+		t.Fatal("expected error: manifest not found when rootfs is missing")
+	}
+}
+
+// TestDockerStore_BuildImageManifest_InvalidDiffID exercises the early-return in
+// buildImageManifest when digest.Parse fails for a diffID string. The config has a
+// diff_ids entry that is not a valid digest string.
+func TestDockerStore_BuildImageManifest_InvalidDiffID(t *testing.T) {
+	root := t.TempDir()
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+	if err := os.MkdirAll(imagedbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "image", "overlay2", "layerdb", "sha256"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "image", "overlay2", "repositories.json"),
+		[]byte(`{"Repositories":{}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Config with an invalid diff_id value → digest.Parse in buildImageManifest returns error.
+	configData := []byte(`{"rootfs":{"type":"layers","diff_ids":["not-a-valid-digest"]}}`)
+	dgst := digest.FromBytes(configData)
+	if err := os.WriteFile(filepath.Join(imagedbDir, dgst.Encoded()), configData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := store.GetManifest(context.Background(), dgst)
+	if err == nil {
+		t.Fatal("expected error: manifest not found when diffID is invalid")
+	}
+}
+
+// TestDockerStore_BuildImageManifest_MissingLayerPath exercises the
+// "entry.diffPath == ''" early-return in buildImageManifest. When scanImageDB adds a
+// layerEntry{} for a diffID but scanLayerDB finds no matching layerdb entry, diffPath
+// remains empty and buildImageManifest returns before computing the tar digest.
+func TestDockerStore_BuildImageManifest_MissingLayerPath(t *testing.T) {
+	root := t.TempDir()
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+	if err := os.MkdirAll(imagedbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "image", "overlay2", "layerdb", "sha256"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "image", "overlay2", "repositories.json"),
+		[]byte(`{"Repositories":{}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Config references a valid diffID but there is no layerdb entry for it.
+	// scanImageDB inserts layerEntry{} (empty diffPath); buildImageManifest hits diffPath=="" branch.
+	validDiffID := "sha256:aaaa000000000000000000000000000000000000000000000000000000000000"
+	configData := []byte(`{"rootfs":{"type":"layers","diff_ids":["` + validDiffID + `"]}}`)
+	dgst := digest.FromBytes(configData)
+	if err := os.WriteFile(filepath.Join(imagedbDir, dgst.Encoded()), configData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := store.GetManifest(context.Background(), dgst)
+	if err == nil {
+		t.Fatal("expected error: manifest not found when layer diffPath is empty")
+	}
+}
