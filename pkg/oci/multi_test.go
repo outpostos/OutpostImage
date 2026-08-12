@@ -336,3 +336,130 @@ func TestDetectStores_FullDockerFixture(t *testing.T) {
 		t.Errorf("store name = %q, want %q", stores[0].Name(), "docker")
 	}
 }
+
+// errStore is a Store that returns errors from ListImages and Subscribe.
+type errStore struct {
+	*mockStore
+}
+
+func (e *errStore) ListImages(_ context.Context) ([]Image, error) {
+	return nil, fmt.Errorf("store unavailable")
+}
+
+func (e *errStore) Subscribe(_ context.Context) (<-chan Event, error) {
+	return nil, fmt.Errorf("subscribe unavailable")
+}
+
+// TestMultiStore_GetManifest_AllMiss covers the "manifest not found in any store" error return.
+func TestMultiStore_GetManifest_AllMiss(t *testing.T) {
+	ctx := context.Background()
+	dgst := digest.FromBytes([]byte("unknown-manifest"))
+
+	s1 := newMockStore("docker")
+	s2 := newMockStore("containerd")
+	ms := NewMultiStore(s1, s2)
+
+	_, _, err := ms.GetManifest(ctx, dgst)
+	if err == nil {
+		t.Fatal("expected error when manifest not in any store")
+	}
+}
+
+// TestMultiStore_GetBlob_AllMiss covers the "blob not found in any store" error return.
+func TestMultiStore_GetBlob_AllMiss(t *testing.T) {
+	ctx := context.Background()
+	dgst := digest.FromBytes([]byte("unknown-blob"))
+
+	s1 := newMockStore("docker")
+	s2 := newMockStore("containerd")
+	ms := NewMultiStore(s1, s2)
+
+	_, _, err := ms.GetBlob(ctx, dgst)
+	if err == nil {
+		t.Fatal("expected error when blob not in any store")
+	}
+}
+
+// TestMultiStore_ListImages_StoreError covers the slog.Warn path when a store's
+// ListImages returns an error — it should be skipped and the other store's images returned.
+func TestMultiStore_ListImages_StoreError(t *testing.T) {
+	ctx := context.Background()
+	dgst := digest.FromBytes([]byte("img1"))
+
+	good := newMockStore("good")
+	good.images = []Image{{Digest: dgst, RepoTags: []string{"nginx:latest"}}}
+
+	bad := &errStore{newMockStore("bad")}
+
+	ms := NewMultiStore(bad, good) // bad first — it errors, good should still be queried
+	images, err := ms.ListImages(ctx)
+	if err != nil {
+		t.Fatalf("ListImages() unexpected error: %v", err)
+	}
+	if len(images) != 1 {
+		t.Errorf("ListImages() returned %d images, want 1", len(images))
+	}
+}
+
+// TestMultiStore_Subscribe_StoreError covers the slog.Warn path when a store's
+// Subscribe returns an error — it should be skipped and the other store subscribed.
+func TestMultiStore_Subscribe_StoreError(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	dgst := digest.FromBytes([]byte("ev1"))
+
+	good := newMockStore("good")
+	bad := &errStore{newMockStore("bad")}
+
+	ms := NewMultiStore(bad, good)
+	ch, err := ms.Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe() unexpected error: %v", err)
+	}
+
+	good.events <- Event{Type: EventCreate, Digest: dgst}
+
+	select {
+	case ev := <-ch:
+		if ev.Digest != dgst {
+			t.Errorf("received event digest %s, want %s", ev.Digest, dgst)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for event from good store")
+	}
+}
+
+// TestMultiStore_Subscribe_CtxDone covers the ctx.Done() branch in the fan-in goroutine.
+// It fills the merged channel buffer so the goroutine blocks, then cancels the context
+// to force the ctx.Done() select case.
+func TestMultiStore_Subscribe_CtxDone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	s := newMockStore("docker")
+	ms := NewMultiStore(s)
+
+	ch, err := ms.Subscribe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Fill the merged channel buffer (capacity 16) without draining it.
+	for i := 0; i < 16; i++ {
+		dgst := digest.FromBytes([]byte(fmt.Sprintf("fill-%d", i)))
+		s.events <- Event{Type: EventCreate, Digest: dgst}
+	}
+
+	// Cancel context so the goroutine picks ctx.Done() when it tries to send the 17th event.
+	cancel()
+
+	// Send one more event — goroutine should exit via ctx.Done() since merged is full.
+	s.events <- Event{Type: EventCreate, Digest: digest.FromBytes([]byte("overflow"))}
+
+	// Close the store channel to unblock range and let the wg.Wait goroutine close merged.
+	close(s.events)
+
+	// Drain merged so the test can finish cleanly.
+	for range ch {
+	}
+}
