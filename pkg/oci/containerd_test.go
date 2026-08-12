@@ -3,6 +3,7 @@ package oci
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1412,5 +1413,59 @@ func TestContainerdStore_Subscribe_Debounce(t *testing.T) {
 			t.Errorf("timeout waiting for debounced events; got %d/2", received)
 			return
 		}
+	}
+}
+
+// TestContainerdStore_Subscribe_FlushCtxDone covers the ctx.Done() path inside the
+// flush() closure in Subscribe. The output channel ch has capacity 16. By creating
+// 17 valid blob files before the debounce timer fires (all land in pending), flush()
+// fills ch with the first 16 events and then blocks on the 17th emit. Cancelling ctx
+// causes the `case <-ctx.Done(): return` inside flush() to execute.
+func TestContainerdStore_Subscribe_FlushCtxDone(t *testing.T) {
+	store, root := setupContainerdTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
+
+	ch, err := store.Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	// Let the watcher start before creating files.
+	time.Sleep(100 * time.Millisecond)
+
+	// Create 17 files with valid sha256 hex names in rapid succession so that all
+	// 17 land in the pending map before the 500ms debounce fires. ch has capacity
+	// 16, so flush() will successfully emit items 1–16 into the buffer and then
+	// block when trying to emit item 17.
+	for i := 1; i <= 17; i++ {
+		name := fmt.Sprintf("%064x", i)
+		if err := os.WriteFile(filepath.Join(blobDir, name), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Wait for the debounce timer to fire (500ms) plus some processing time.
+	time.Sleep(700 * time.Millisecond)
+
+	// Cancel context while the goroutine is blocked on the 17th emit. This exercises
+	// the `case <-ctx.Done(): return` inside flush().
+	cancel()
+
+	// The goroutine should exit and close ch.
+	select {
+	case _, ok := <-ch:
+		if ok {
+			for range ch {
+			}
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("channel not closed after context cancel in flush()")
 	}
 }

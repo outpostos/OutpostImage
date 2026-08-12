@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -528,6 +529,55 @@ func TestDockerStore_Subscribe_InvalidDigestFilename(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("timeout: goroutine did not survive invalid digest filename")
+	}
+}
+
+// TestDockerStore_Subscribe_ContextDoneWhileEmitting covers the ctx.Done() path
+// inside the EventCreate select in Subscribe. By not reading from ch (capacity 16)
+// and creating 17 valid sha256-named files, the goroutine fills the buffer with the
+// first 16 events and then blocks on the 17th emit. Cancelling ctx causes the
+// `case <-ctx.Done(): return` branch to fire.
+func TestDockerStore_Subscribe_ContextDoneWhileEmitting(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch, err := store.Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+
+	// Create 17 files with valid sha256 hex names. ch has capacity 16, so the
+	// goroutine fills the buffer on the first 16 and blocks on the 17th.
+	for i := 1; i <= 17; i++ {
+		name := fmt.Sprintf("%064x", i)
+		path := filepath.Join(imagedbDir, name)
+		if err := os.WriteFile(path, []byte("{}"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Give fsnotify time to deliver all events and let the goroutine fill ch.
+	time.Sleep(200 * time.Millisecond)
+
+	// Cancel context while the goroutine is blocked trying to emit the 17th event.
+	cancel()
+
+	// The goroutine should exit (via ctx.Done() path) and close ch.
+	select {
+	case _, ok := <-ch:
+		if ok {
+			// Drain any buffered events until close.
+			for range ch {
+			}
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("channel not closed after context cancel")
 	}
 }
 
