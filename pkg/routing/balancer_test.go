@@ -136,3 +136,18 @@ func TestNewLatencyBalancer_ZeroLatency(t *testing.T) {
 		t.Errorf("expected a:5000, got %q ok=%v", p, ok)
 	}
 }
+
+// TestWeightedNext_Fallback exercises the "floating point edge case" fallback line in
+// weightedNext. A balancer with an empty weights slice (non-nil but length 0) causes
+// the for-range loop body to never execute, so execution falls through to the final
+// return statement — the last peer.
+func TestWeightedNext_Fallback(t *testing.T) {
+	b := &Balancer{
+		peers:   []string{"only:5000"},
+		weights: []float64{}, // empty, not nil → loop body never executes → fallback fires
+	}
+	peer := b.weightedNext()
+	if peer != "only:5000" {
+		t.Errorf("expected fallback peer only:5000, got %q", peer)
+	}
+}

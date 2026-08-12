@@ -969,6 +969,31 @@ func TestRouteBlobMiss_UpstreamHead(t *testing.T) {
 	}
 }
 
+// failReadBody is an io.ReadCloser whose Read always returns an error.
+type failReadBody struct{}
+
+func (f *failReadBody) Read(_ []byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+func (f *failReadBody) Close() error               { return nil }
+
+// TestServeFetchedManifest_ReadError covers the io.ReadAll error path in serveFetchedManifest
+// by passing a response body that always fails on read.
+func TestServeFetchedManifest_ReadError(t *testing.T) {
+	store := newEmptyOCITestStore()
+	h := NewOCIHandler(store)
+
+	resp := &proxy.PeerFetchResponse{
+		Body:   &failReadBody{},
+		Header: make(http.Header),
+	}
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/latest", nil)
+
+	if h.serveFetchedManifest(w, r, resp) {
+		t.Error("expected false when body read fails")
+	}
+}
+
 // TestServeFetchedManifest_HEAD exercises the HEAD branch in serveFetchedManifest — when the
 // upstream serves a 200 for a HEAD manifest request, no body is written.
 func TestServeFetchedManifest_HEAD(t *testing.T) {

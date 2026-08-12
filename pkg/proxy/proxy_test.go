@@ -750,6 +750,43 @@ func TestProxy_Connect_HijackError(t *testing.T) {
 	}
 }
 
+// errBodyReader always returns an error on Read, simulating a broken request body.
+type errBodyReader struct{}
+
+func (e *errBodyReader) Read(_ []byte) (int, error) { return 0, io.ErrClosedPipe }
+
+// TestForwardToUpstream_WriteRequestError exercises the req.Write error path.
+// A POST request with a broken body reader causes req.Write to fail, which triggers
+// writeHTTPError(502) before the response is read.
+func TestForwardToUpstream_WriteRequestError(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	p := NewProxy(nil)
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, "https://example.com/v2/test", io.NopCloser(&errBodyReader{}))
+	req.RequestURI = ""
+	req.ContentLength = -1 // chunked: forces body to be read during req.Write
+
+	go func() {
+		p.forwardToUpstream(serverConn, req, upstream.Listener.Addr().String(), true)
+		serverConn.Close()
+	}()
+
+	resp, err := http.ReadResponse(bufio.NewReader(clientConn), nil)
+	if err != nil {
+		t.Fatalf("expected 502 error response, got read error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d (BadGateway on req.Write error)", resp.StatusCode, http.StatusBadGateway)
+	}
+}
+
 // TestForwardToUpstream_Success exercises the full happy path: dial, write request, read response.
 func TestForwardToUpstream_Success(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

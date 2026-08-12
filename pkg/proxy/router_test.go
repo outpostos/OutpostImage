@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,21 @@ func (m *mockRouter) Withdraw(_ context.Context, _ []digest.Digest) error       
 func (m *mockRouter) PeerLatency(_ string) float64                                           { return 0 }
 func (m *mockRouter) RunHealthCheck(_ context.Context, _ time.Duration) error                { return nil }
 func (m *mockRouter) HealthyPeers() []string                                                 { return nil }
+
+// mockLookupRouter is a routing.Router that returns a configurable *Balancer from Lookup.
+// It is NOT a *routing.StaticRouter, so HealthyPeersFromRouter returns nil for it —
+// which forces the code into the legacy P2P parallel fetcher path.
+type mockLookupRouter struct {
+	balancer *routing.Balancer
+	err      error
+}
+
+func (m *mockLookupRouter) Ready(_ context.Context) (bool, error) { return true, nil }
+func (m *mockLookupRouter) Lookup(_ context.Context, _ digest.Digest) (*routing.Balancer, error) {
+	return m.balancer, m.err
+}
+func (m *mockLookupRouter) Advertise(_ context.Context, _ []digest.Digest) error { return nil }
+func (m *mockLookupRouter) Withdraw(_ context.Context, _ []digest.Digest) error  { return nil }
 
 type routerMockStore struct {
 	images []oci.Image
@@ -686,5 +702,89 @@ func TestProxyToLocal_DoError(t *testing.T) {
 
 	if w.Code != http.StatusBadGateway {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadGateway)
+	}
+}
+
+// TestRequestRouter_LegacyP2P_Success exercises the legacy parallel-fetcher path in
+// RequestRouter. A mockLookupRouter (non-StaticRouter) causes HealthyPeersFromRouter to
+// return nil, bypassing the new P2P loop. Lookup returns a balancer with the peer;
+// headBlobSize returns > 0; StreamFetch succeeds → interceptor returns true.
+func TestRequestRouter_LegacyP2P_Success(t *testing.T) {
+	blobData := []byte("legacy p2p blob content")
+	blobDigest := digest.FromBytes(blobData)
+	blobPath := "/v2/library/nginx/blobs/" + blobDigest.String()
+
+	// Peer server: HEAD returns content-length, GET returns the blob.
+	peerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(blobData)))
+		w.WriteHeader(http.StatusOK)
+		if r.Method != http.MethodHead {
+			_, _ = w.Write(blobData)
+		}
+	}))
+	defer peerSrv.Close()
+	peerAddr := peerSrv.Listener.Addr().String()
+
+	// Local server: always 404 so tryBlobFromLocal fails.
+	localSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer localSrv.Close()
+
+	tracker := setupRouterTest(t)
+	mr := &mockLookupRouter{balancer: routing.NewBalancer([]string{peerAddr})}
+	interceptor := RequestRouter(tracker, localSrv.Listener.Addr().String(), mr)
+
+	req := httptest.NewRequest(http.MethodGet, "http://registry.example.com"+blobPath, nil)
+	rec := httptest.NewRecorder()
+
+	handled := interceptor(rec, req)
+	if !handled {
+		t.Fatal("expected legacy P2P fetcher to handle the request")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if string(rec.Body.Bytes()) != string(blobData) {
+		t.Errorf("body = %q, want %q", rec.Body.Bytes(), blobData)
+	}
+}
+
+// TestRequestRouter_LegacyP2P_FetchError exercises the StreamFetch error path in
+// RequestRouter's legacy P2P block. headBlobSize returns > 0 but GET returns 500,
+// causing StreamFetch to fail → interceptor returns false.
+func TestRequestRouter_LegacyP2P_FetchError(t *testing.T) {
+	blobData := []byte("some blob")
+	blobDigest := digest.FromBytes(blobData)
+	blobPath := "/v2/library/nginx/blobs/" + blobDigest.String()
+
+	// Peer server: HEAD succeeds with Content-Length, but GET returns 500.
+	peerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(blobData)))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer peerSrv.Close()
+	peerAddr := peerSrv.Listener.Addr().String()
+
+	localSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer localSrv.Close()
+
+	tracker := setupRouterTest(t)
+	mr := &mockLookupRouter{balancer: routing.NewBalancer([]string{peerAddr})}
+	interceptor := RequestRouter(tracker, localSrv.Listener.Addr().String(), mr)
+
+	req := httptest.NewRequest(http.MethodGet, "http://registry.example.com"+blobPath, nil)
+	rec := httptest.NewRecorder()
+
+	handled := interceptor(rec, req)
+	if handled {
+		t.Error("expected legacy P2P fetch error to return false (fall back to upstream)")
 	}
 }
