@@ -823,3 +823,37 @@ func TestForwardToUpstream_Success(t *testing.T) {
 		t.Errorf("body = %q, want %q", string(body), "hello from upstream")
 	}
 }
+
+// TestHandleMITM_WithCertMgr exercises the `if p.certMgr != nil` branch in
+// handleMITM by creating a proxy with a real CertManager and performing a
+// TLS handshake so the GetCertificate path is hit.
+func TestHandleMITM_WithCertMgr(t *testing.T) {
+	cm, err := NewCertManager("")
+	if err != nil {
+		t.Fatalf("NewCertManager: %v", err)
+	}
+
+	p := NewProxy(nil, cm)
+
+	clientConn, serverConn := net.Pipe()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// insecure=false → p.certMgr != nil branch → GetCertificate is called.
+		p.handleMITM(serverConn, nil, "example.com", "example.com:443", false)
+	}()
+
+	// TLS client: perform handshake and then close immediately to exit the read loop.
+	clientTLS := tls.Client(clientConn, &tls.Config{
+		InsecureSkipVerify: true, //nolint:gosec
+	})
+	_ = clientTLS.Handshake()
+	clientTLS.Close()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Error("handleMITM did not exit after client close")
+	}
+}

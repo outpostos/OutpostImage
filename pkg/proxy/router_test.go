@@ -836,3 +836,72 @@ func TestFetchFromPeer_ConnectionRefused(t *testing.T) {
 		t.Fatal("expected error when connecting to a closed port")
 	}
 }
+
+// TestHeadBlobSize_InvalidURL covers the http.NewRequest error path in headBlobSize
+// by passing a peer address that produces an URL with an invalid character.
+func TestHeadBlobSize_InvalidURL(t *testing.T) {
+	// "http:// host" → peerSchemeAndAddr returns scheme="http", hostport=" host"
+	// → url = "http:// host/path" → url.Parse fails → NewRequest error → return 0
+	size := headBlobSize(context.Background(), "http:// invalid host", "/v2/path/blobs/sha256:abc")
+	if size != 0 {
+		t.Errorf("headBlobSize = %d, want 0 for invalid URL", size)
+	}
+}
+
+// TestHeadBlobSize_DoError covers the http.Do error path in headBlobSize by using a
+// cancelled context so the request fails immediately.
+func TestHeadBlobSize_DoError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately so http.Do fails
+
+	size := headBlobSize(ctx, srv.Listener.Addr().String(), "/v2/path/blobs/sha256:abc")
+	if size != 0 {
+		t.Errorf("headBlobSize = %d, want 0 when context cancelled", size)
+	}
+}
+
+// TestTryBlobFromLocal_InvalidURL covers the http.NewRequest error path in
+// tryBlobFromLocal by passing a peer address with an invalid character.
+func TestTryBlobFromLocal_InvalidURL(t *testing.T) {
+	ok := tryBlobFromLocal(context.Background(), "http:// invalid host", "/v2/path/blobs/sha256:abc", false)
+	if ok {
+		t.Error("tryBlobFromLocal should return false for invalid URL")
+	}
+}
+
+// TestTryManifestFrom_InvalidURL covers the http.NewRequest error path in
+// tryManifestFrom by passing a peer address with an invalid character.
+func TestTryManifestFrom_InvalidURL(t *testing.T) {
+	w := httptest.NewRecorder()
+	ok := tryManifestFrom(context.Background(), w, "http:// invalid host", "/v2/library/nginx/manifests/latest", "", false)
+	if ok {
+		t.Error("tryManifestFrom should return false for invalid URL")
+	}
+}
+
+// TestUpstreamBaseURL_ParseError covers the url.Parse error path in upstreamBaseURL
+// when the input begins with "http://" or "https://" but contains an invalid host
+// (unclosed IPv6 bracket causes url.Parse to fail).
+func TestUpstreamBaseURL_ParseError(t *testing.T) {
+	_, err := upstreamBaseURL("http://[::unclosed")
+	if err == nil {
+		t.Error("expected error for URL with unclosed IPv6 bracket")
+	}
+}
+
+// TestFetchFromUpstream_InvalidRegistryURL covers the http.NewRequest or upstreamBaseURL
+// error path when the X-Upstream-Registry header contains an invalid URL.
+func TestFetchFromUpstream_InvalidRegistryURL(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/v2/path", nil)
+	req.Header.Set("X-Upstream-Registry", "http://[::unclosed")
+	_, err := FetchFromUpstream(context.Background(), req, http.MethodGet, "")
+	if err == nil {
+		t.Error("expected error for invalid upstream registry URL")
+	}
+}
+
