@@ -843,6 +843,65 @@ func TestForwardToUpstream_Success(t *testing.T) {
 // TestHandleMITM_WithCertMgr exercises the `if p.certMgr != nil` branch in
 // handleMITM by creating a proxy with a real CertManager and performing a
 // TLS handshake so the GetCertificate path is hit.
+// flushFailHijackWriter is a ResponseWriter/Hijacker that succeeds on Hijack but
+// returns a bufio.ReadWriter backed by a broken net.Pipe so clientBuf.Flush() fails.
+type flushFailHijackWriter struct {
+	conn    net.Conn
+	buf     *bufio.ReadWriter
+	headers http.Header
+}
+
+func (w *flushFailHijackWriter) Header() http.Header { return w.headers }
+func (w *flushFailHijackWriter) WriteHeader(code int) {
+	// Write response into the bufio buffer so Flush has something to flush.
+	fmt.Fprintf(w.buf, "HTTP/1.1 %d %s\r\n\r\n", code, http.StatusText(code))
+}
+func (w *flushFailHijackWriter) Write(b []byte) (int, error) { return w.buf.Write(b) }
+func (w *flushFailHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, w.buf, nil
+}
+
+// TestProxy_Connect_FlushError exercises the clientBuf.Flush() error path in handleConnect.
+// After a successful Hijack(), the buffered 200 response is flushed to the client.
+// If the pipe's read end is already closed, the Flush write fails and handleConnect returns.
+func TestProxy_Connect_FlushError(t *testing.T) {
+	p := NewProxy(nil)
+
+	// net.Pipe gives a synchronous in-memory connection.
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+
+	// Create a bufio.ReadWriter wrapping serverConn.
+	brw := bufio.NewReadWriter(
+		bufio.NewReader(serverConn),
+		bufio.NewWriter(serverConn),
+	)
+	fw := &flushFailHijackWriter{
+		conn:    serverConn,
+		buf:     brw,
+		headers: make(http.Header),
+	}
+
+	req := httptest.NewRequest(http.MethodConnect, "https://registry.example.com:443", nil)
+	req.Host = "registry.example.com:443"
+
+	// Close the read-end of the pipe BEFORE handleConnect can flush — any write to
+	// serverConn will now return a broken-pipe error, causing Flush to fail.
+	clientConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.handleConnect(fw, req)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Error("handleConnect did not return after Flush error")
+	}
+}
+
 func TestHandleMITM_WithCertMgr(t *testing.T) {
 	cm, err := NewCertManager("")
 	if err != nil {
