@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -405,5 +406,215 @@ func TestForwardToUpstream_DialFailed(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadGateway)
+	}
+}
+
+// TestProxy_ServeHTTP_ConnectTunnel verifies that ServeHTTP routes CONNECT requests
+// through handleConnect (the other branch from plain HTTP).
+func TestProxy_ServeHTTP_ConnectTunnel(t *testing.T) {
+	echoLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer echoLn.Close()
+	go func() {
+		c, err := echoLn.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		buf := make([]byte, 128)
+		n, _ := c.Read(buf)
+		_, _ = c.Write(buf[:n])
+	}()
+
+	targetAddr := echoLn.Addr().String()
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+
+	p := NewProxy(nil)
+	req := httptest.NewRequest(http.MethodConnect, "https://"+targetAddr, nil)
+	req.Host = targetAddr
+	fw := &fakeHijackWriter{conn: serverConn, headers: make(http.Header)}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.ServeHTTP(fw, req) // routes through handleConnect via CONNECT branch
+	}()
+
+	header := make([]byte, 38)
+	n, _ := clientConn.Read(header)
+	if !strings.HasPrefix(string(header[:n]), "HTTP/1.1 200") {
+		t.Fatalf("expected 200, got: %q", string(header[:n]))
+	}
+
+	msg := "ping"
+	clientConn.Write([]byte(msg))
+	got := make([]byte, len(msg))
+	io.ReadFull(clientConn, got)
+	if string(got) != msg {
+		t.Errorf("echo = %q, want %q", got, msg)
+	}
+
+	clientConn.Close()
+	<-done
+}
+
+// TestHandleMITM_InterceptsOCIRequest exercises the full MITM loop:
+// TLS handshake succeeds, the interceptor handles an OCI request and returns true,
+// then connection close terminates the loop.
+func TestHandleMITM_InterceptsOCIRequest(t *testing.T) {
+	intercepted := false
+	p := NewProxy(func(w http.ResponseWriter, r *http.Request) bool {
+		intercepted = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("intercepted"))
+		return true
+	})
+
+	clientConn, serverConn := net.Pipe()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.handleMITM(serverConn, nil, "example.com", "example.com:443", true)
+	}()
+
+	clientTLS := tls.Client(clientConn, &tls.Config{
+		InsecureSkipVerify: true, //nolint:gosec
+	})
+	if err := clientTLS.Handshake(); err != nil {
+		clientConn.Close()
+		t.Fatalf("TLS handshake: %v", err)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, "https://example.com/v2/", nil)
+	if err := req.Write(clientTLS); err != nil {
+		clientTLS.Close()
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(clientTLS), req)
+	if err != nil {
+		clientTLS.Close()
+		t.Fatalf("read response: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if string(body) != "intercepted" {
+		t.Errorf("body = %q, want %q", string(body), "intercepted")
+	}
+	if !intercepted {
+		t.Error("expected request to be intercepted")
+	}
+
+	// Close client to terminate the MITM read loop (causes EOF in ReadRequest).
+	clientTLS.Close()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Error("handleMITM did not exit after client close")
+	}
+}
+
+// TestHandleMITM_NonOCIForwardsToUpstream exercises the forwardToUpstream path
+// when the MITM loop receives a non-OCI request (no interceptor match).
+func TestHandleMITM_NonOCIForwardsToUpstream(t *testing.T) {
+	// Set up a real TLS server to act as upstream.
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+		_, _ = w.Write([]byte("upstream"))
+	}))
+	defer upstream.Close()
+
+	p := NewProxy(nil) // no interceptor
+
+	clientConn, serverConn := net.Pipe()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// insecure=true so upstream TLS cert is not verified.
+		p.handleMITM(serverConn, nil, "example.com", upstream.Listener.Addr().String(), true)
+	}()
+
+	clientTLS := tls.Client(clientConn, &tls.Config{
+		InsecureSkipVerify: true, //nolint:gosec
+	})
+	if err := clientTLS.Handshake(); err != nil {
+		clientConn.Close()
+		t.Fatalf("TLS handshake: %v", err)
+	}
+
+	// Send a non-OCI (non-/v2/) request so it goes to forwardToUpstream.
+	req, _ := http.NewRequest(http.MethodGet, "https://example.com/healthz", nil)
+	if err := req.Write(clientTLS); err != nil {
+		clientTLS.Close()
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(clientTLS), req)
+	if err != nil {
+		clientTLS.Close()
+		t.Fatalf("read response: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusTeapot {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusTeapot)
+	}
+	if string(body) != "upstream" {
+		t.Errorf("body = %q, want %q", string(body), "upstream")
+	}
+
+	clientTLS.Close()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Error("handleMITM did not exit after client close")
+	}
+}
+
+// TestForwardToUpstream_Success exercises the full happy path: dial, write request, read response.
+func TestForwardToUpstream_Success(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("hello from upstream"))
+	}))
+	defer upstream.Close()
+
+	p := NewProxy(nil)
+
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, "https://example.com/v2/", nil)
+	req.URL.Host = "example.com"
+	req.RequestURI = ""
+
+	go func() {
+		p.forwardToUpstream(serverConn, req, upstream.Listener.Addr().String(), true)
+		serverConn.Close()
+	}()
+
+	resp, err := http.ReadResponse(bufio.NewReader(clientConn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if string(body) != "hello from upstream" {
+		t.Errorf("body = %q, want %q", string(body), "hello from upstream")
 	}
 }

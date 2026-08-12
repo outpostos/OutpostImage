@@ -507,6 +507,203 @@ func TestOCIErrorFormat(t *testing.T) {
 	}
 }
 
+// --- handleGetManifest by-digest paths ---
+
+func TestHandleGetManifest_ByDigest_StoreFetch(t *testing.T) {
+	mux := newOCITestMux()
+
+	// The mock store has configData at configDigest — fetch by digest directly.
+	configData := []byte(`{"architecture":"amd64","os":"linux"}`)
+	configDigest := digest.FromBytes(configData)
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/"+configDigest.String(), nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Docker-Content-Digest"); got == "" {
+		t.Error("missing Docker-Content-Digest header")
+	}
+}
+
+func TestHandleGetManifest_ByDigest_CacheHit(t *testing.T) {
+	mux := newOCITestMux()
+
+	// Step 1: tag-based GET populates the manifest cache.
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/latest", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tag GET status = %d", rec.Code)
+	}
+	contentDigest := rec.Header().Get("Docker-Content-Digest")
+	if contentDigest == "" {
+		t.Fatal("missing Docker-Content-Digest from tag GET")
+	}
+
+	// Step 2: digest-based GET hits the manifest cache.
+	req = httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/"+contentDigest, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("digest GET (cache hit) status = %d, want 200", rec.Code)
+	}
+	if rec.Header().Get("Docker-Content-Digest") != contentDigest {
+		t.Errorf("digest = %q, want %q", rec.Header().Get("Docker-Content-Digest"), contentDigest)
+	}
+}
+
+func TestHandleGetManifest_ByDigest_HEAD_CacheHit(t *testing.T) {
+	mux := newOCITestMux()
+
+	// Populate cache via GET.
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/latest", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	contentDigest := rec.Header().Get("Docker-Content-Digest")
+
+	// HEAD by digest (cache hit) should return no body.
+	req = httptest.NewRequest(http.MethodHead, "/v2/library/nginx/manifests/"+contentDigest, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HEAD digest (cache hit) status = %d, want 200", rec.Code)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("HEAD should return no body, got %d bytes", rec.Body.Len())
+	}
+}
+
+func TestHandleGetManifest_ByDigest_Invalid(t *testing.T) {
+	mux := newOCITestMux()
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/sha256:invalid", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestHandleGetManifest_ByDigest_NotFound(t *testing.T) {
+	mux := newOCITestMux()
+
+	fakeDigest := "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/"+fakeDigest, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+// --- handleGetBlob range/error paths ---
+
+func TestHandleGetBlob_WithRange(t *testing.T) {
+	mux := newOCITestMux()
+
+	blobData := []byte("fake blob content")
+	blobDigest := digest.FromBytes(blobData)
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/blobs/"+blobDigest.String(), nil)
+	req.Header.Set("Range", "bytes=0-3") // "fake"
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d, want 206", rec.Code)
+	}
+	if string(rec.Body.Bytes()) != "fake" {
+		t.Errorf("body = %q, want %q", rec.Body.Bytes(), "fake")
+	}
+	if rec.Header().Get("Content-Range") == "" {
+		t.Error("missing Content-Range header")
+	}
+}
+
+func TestHandleGetBlob_InvalidRange(t *testing.T) {
+	mux := newOCITestMux()
+
+	blobData := []byte("fake blob content") // 17 bytes
+	blobDigest := digest.FromBytes(blobData)
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/blobs/"+blobDigest.String(), nil)
+	req.Header.Set("Range", "bytes=100-200") // start >= size → invalid
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("status = %d, want 416", rec.Code)
+	}
+	if rec.Header().Get("Content-Range") == "" {
+		t.Error("missing Content-Range header on 416")
+	}
+}
+
+func TestHandleGetBlob_InvalidDigest(t *testing.T) {
+	mux := newOCITestMux()
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/blobs/sha256:invalid", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+// --- handleHeadBlob error paths ---
+
+func TestHandleHeadBlob_InvalidDigest(t *testing.T) {
+	mux := newOCITestMux()
+
+	req := httptest.NewRequest(http.MethodHead, "/v2/library/nginx/blobs/sha256:invalid", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+// --- originalRegistryHost paths ---
+
+func TestOriginalRegistryHost_Headers(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/latest", nil)
+	req.Header.Set("X-Original-Registry", "original.registry.io")
+	if got := originalRegistryHost(req); got != "original.registry.io" {
+		t.Errorf("X-Original-Registry: got %q, want %q", got, "original.registry.io")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/latest", nil)
+	req.Header.Set("X-Upstream-Registry", "upstream.registry.io")
+	if got := originalRegistryHost(req); got != "upstream.registry.io" {
+		t.Errorf("X-Upstream-Registry: got %q, want %q", got, "upstream.registry.io")
+	}
+}
+
+func TestOriginalRegistryHost_AbsoluteURL(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "https://abs.registry.io/v2/library/nginx/manifests/latest", nil)
+	// httptest.NewRequest parses the URL; set scheme and host explicitly for IsAbs().
+	req.URL.Scheme = "https"
+	req.URL.Host = "abs.registry.io"
+	if got := originalRegistryHost(req); got != "abs.registry.io" {
+		t.Errorf("absolute URL: got %q, want %q", got, "abs.registry.io")
+	}
+}
+
+func TestOriginalRegistryHost_HostFallback(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/latest", nil)
+	req.Host = "fallback.registry.io"
+	if got := originalRegistryHost(req); got != "fallback.registry.io" {
+		t.Errorf("Host fallback: got %q, want %q", got, "fallback.registry.io")
+	}
+}
+
 func TestParseRangeHeader(t *testing.T) {
 	tests := []struct {
 		header    string
