@@ -277,6 +277,75 @@ func TestStaticRouter_PeerLatency_AfterHealthCheck(t *testing.T) {
 	}
 }
 
+// TestStaticRouter_Lookup_PeerDigestReturns404 exercises the non-200 path in
+// queryPeerDigest — a 404 response counts as "does not have digest".
+func TestStaticRouter_Lookup_PeerDigestReturns404(t *testing.T) {
+	dgst := digest.FromString("test-404-digest")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	pw := NewPeerWatcher([]string{addr})
+	r := NewStaticRouter(pw)
+
+	bal, err := r.Lookup(context.Background(), dgst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bal.Len() != 0 {
+		t.Errorf("expected 0 holders when peer returns 404, got %d", bal.Len())
+	}
+}
+
+// TestStaticRouter_Lookup_WithLatency exercises the latency-aware balancer path in
+// buildBalancer — requires the peer to have an EWMA latency entry from a prior health check.
+func TestStaticRouter_Lookup_WithLatency(t *testing.T) {
+	dgst := digest.FromString("test-latency-digest")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/digests/") {
+			_ = json.NewEncoder(w).Encode(map[string]bool{"exists": true})
+			return
+		}
+		w.WriteHeader(http.StatusOK) // healthz
+	}))
+	defer srv.Close()
+
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	pw := NewPeerWatcher([]string{addr})
+	r := NewStaticRouter(pw)
+
+	// Run a health check to populate the latency map.
+	r.checkAllPeers(context.Background())
+
+	// Lookup should now use NewLatencyBalancer since r.latency[addr] is set.
+	bal, err := r.Lookup(context.Background(), dgst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bal.Len() != 1 {
+		t.Errorf("expected 1 holder with latency balancer, got %d", bal.Len())
+	}
+}
+
+// TestStaticRouter_CheckPeerHealth_ConnectionRefused exercises the client.Do error
+// path in checkPeerHealth when the peer is unreachable.
+func TestStaticRouter_CheckPeerHealth_ConnectionRefused(t *testing.T) {
+	pw := NewPeerWatcher([]string{"127.0.0.1:1"}) // port 1 is always unreachable
+	r := NewStaticRouter(pw)
+
+	r.checkAllPeers(context.Background())
+
+	r.mu.RLock()
+	failures := r.failures["127.0.0.1:1"]
+	r.mu.RUnlock()
+
+	if failures != 1 {
+		t.Errorf("expected 1 failure for unreachable peer, got %d", failures)
+	}
+}
+
 func TestStaticRouter_RunHealthCheck_CancelledContext(t *testing.T) {
 	pw := NewPeerWatcher(nil)
 	r := NewStaticRouter(pw)
