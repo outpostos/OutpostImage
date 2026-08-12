@@ -555,6 +555,73 @@ func TestContainerdStore_Resolve_InvalidRef(t *testing.T) {
 	}
 }
 
+// TestContainerdStore_ScanContentStore_NotExist covers the os.IsNotExist → return nil
+// path in scanContentStore when the blob directory has never been created.
+func TestContainerdStore_ScanContentStore_NotExist(t *testing.T) {
+	root := t.TempDir() // no content-store subdirectory created
+	store := NewContainerdStore(root)
+	if err := store.scanContentStore(); err != nil {
+		t.Fatalf("expected nil when blob dir does not exist, got: %v", err)
+	}
+}
+
+// TestContainerdStore_ScanContentStore_SkipsDir covers the `entry.IsDir() → continue`
+// path in scanContentStore when a subdirectory exists inside the blob dir.
+func TestContainerdStore_ScanContentStore_SkipsDir(t *testing.T) {
+	root := t.TempDir()
+	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
+	if err := os.MkdirAll(blobDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A subdirectory inside blobDir — scanContentStore must skip it.
+	if err := os.Mkdir(filepath.Join(blobDir, "a_subdir"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// One valid blob file.
+	validContent := []byte("scan-skip-dir-test")
+	dgst := digest.FromBytes(validContent)
+	if err := os.WriteFile(filepath.Join(blobDir, dgst.Encoded()), validContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewContainerdStore(root)
+	if err := store.scanContentStore(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(store.blobs) != 1 {
+		t.Errorf("expected 1 blob after skipping dir, got %d", len(store.blobs))
+	}
+}
+
+// TestContainerdStore_ScanContentStore_SkipsInvalidName covers the
+// `digest.Parse error → continue` path in scanContentStore when a blob file's
+// name is not a valid sha256 hex hash.
+func TestContainerdStore_ScanContentStore_SkipsInvalidName(t *testing.T) {
+	root := t.TempDir()
+	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
+	if err := os.MkdirAll(blobDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A file with an invalid name (not a sha256 hex hash).
+	if err := os.WriteFile(filepath.Join(blobDir, "not-a-valid-sha256-name"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// One valid blob file.
+	validContent := []byte("scan-skip-invalid-name-test")
+	dgst := digest.FromBytes(validContent)
+	if err := os.WriteFile(filepath.Join(blobDir, dgst.Encoded()), validContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewContainerdStore(root)
+	if err := store.scanContentStore(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(store.blobs) != 1 {
+		t.Errorf("expected 1 blob (invalid name skipped), got %d", len(store.blobs))
+	}
+}
+
 // TestContainerdStore_ScanContentStore_FileAsDir exercises the non-IsNotExist error
 // path in scanContentStore by making the sha256 blob directory path a regular file.
 func TestContainerdStore_ScanContentStore_FileAsDir(t *testing.T) {
