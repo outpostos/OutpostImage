@@ -749,3 +749,251 @@ func TestParseRangeHeader(t *testing.T) {
 		}
 	}
 }
+
+// --- handleHeadBlob miss paths ---
+
+// TestHandleHeadBlob_UnknownBlob exercises the routeBlobMiss path in handleHeadBlob — a valid
+// digest that is not in the store with upstreamFallback disabled → 404.
+func TestHandleHeadBlob_UnknownBlob(t *testing.T) {
+	store := newEmptyOCITestStore()
+	mux := newRegistryFallbackMux(store, WithUpstreamFallback(false))
+
+	unknownDigest := "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	req := httptest.NewRequest(http.MethodHead, "/v2/library/nginx/blobs/"+unknownDigest, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+// TestHandleHeadBlob_PeerFetch_Miss exercises the isPeerFetch branch in handleHeadBlob —
+// with X-Peer-Fetch set and blob not found, a 404 is returned without routing to upstream.
+func TestHandleHeadBlob_PeerFetch_Miss(t *testing.T) {
+	store := newEmptyOCITestStore()
+	mux := newRegistryFallbackMux(store, WithUpstreamFallback(false))
+
+	unknownDigest := "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	req := httptest.NewRequest(http.MethodHead, "/v2/library/nginx/blobs/"+unknownDigest, nil)
+	req.Header.Set(proxy.PeerFetchHeader, proxy.PeerFetchValue)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+// --- handleGetManifest peerFetch miss paths ---
+
+// TestHandleGetManifest_PeerFetch_TagMiss exercises the peerFetch path when a tag lookup fails —
+// returns 404 without routing to upstream.
+func TestHandleGetManifest_PeerFetch_TagMiss(t *testing.T) {
+	store := newEmptyOCITestStore()
+	mux := newRegistryFallbackMux(store, WithUpstreamFallback(false))
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/missing", nil)
+	req.Header.Set(proxy.PeerFetchHeader, proxy.PeerFetchValue)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+// TestHandleGetManifest_PeerFetch_DigestMiss exercises the peerFetch path when a digest is not
+// cached and not in the store — returns 404 without routing to upstream.
+func TestHandleGetManifest_PeerFetch_DigestMiss(t *testing.T) {
+	store := newEmptyOCITestStore()
+	mux := newRegistryFallbackMux(store, WithUpstreamFallback(false))
+
+	fakeDigest := "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/"+fakeDigest, nil)
+	req.Header.Set(proxy.PeerFetchHeader, proxy.PeerFetchValue)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+// TestHandleGetManifest_PeerFetch_GetManifestError exercises the peerFetch path when Resolve
+// succeeds but GetManifest fails — returns 404 without routing to upstream.
+func TestHandleGetManifest_PeerFetch_GetManifestError(t *testing.T) {
+	brokenDigest := digest.FromString("broken")
+	store := &ociMockStore{
+		manifests: map[digest.Digest][]byte{}, // tag points to digest but manifest data missing
+		blobs:     map[digest.Digest][]byte{},
+		tags:      map[string]digest.Digest{"library/test:v1": brokenDigest},
+	}
+	mux := newRegistryFallbackMux(store, WithUpstreamFallback(false))
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/test/manifests/v1", nil)
+	req.Header.Set(proxy.PeerFetchHeader, proxy.PeerFetchValue)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+// TestHandleGetManifest_OrigHostPrefix exercises the X-Original-Registry host prefix
+// fallback in handleGetManifest — first Resolve fails, second succeeds with host prefix.
+func TestHandleGetManifest_OrigHostPrefix(t *testing.T) {
+	manifestData := []byte(`{"schemaVersion":2}`)
+	manifestDigest := digest.FromBytes(manifestData)
+	store := &ociMockStore{
+		manifests: map[digest.Digest][]byte{manifestDigest: manifestData},
+		blobs:     map[digest.Digest][]byte{},
+		tags: map[string]digest.Digest{
+			"ghcr.io/library/test:v1": manifestDigest, // only the prefixed form is stored
+		},
+	}
+	mux := newRegistryFallbackMux(store, WithUpstreamFallback(false))
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/test/manifests/v1", nil)
+	req.Header.Set("X-Original-Registry", "ghcr.io")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// --- routeManifestMiss upstream paths ---
+
+// TestRouteManifestMiss_UpstreamNonOK exercises the non-200 upstream response path in
+// routeManifestMiss — the response is forwarded to the client as-is.
+func TestRouteManifestMiss_UpstreamNonOK(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"errors":[{"code":"MANIFEST_UNKNOWN"}]}`))
+	}))
+	defer upstream.Close()
+
+	store := newEmptyOCITestStore()
+	mux := newRegistryFallbackMux(store, WithUpstreamFallback(true), WithUpstreamRegistry(upstream.URL))
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/latest", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+// TestRouteManifestMiss_UpstreamOK exercises the GET path in serveFetchedManifest — manifest
+// not in store, upstreamFallback=true, upstream returns 200 → body written to client.
+func TestRouteManifestMiss_UpstreamOK(t *testing.T) {
+	manifest := []byte(`{"schemaVersion":2}`)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(manifest)
+	}))
+	defer upstream.Close()
+
+	store := newEmptyOCITestStore()
+	mux := newRegistryFallbackMux(store, WithUpstreamFallback(true), WithUpstreamRegistry(upstream.URL))
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/latest", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if string(rec.Body.Bytes()) != string(manifest) {
+		t.Errorf("body = %q, want %q", rec.Body.Bytes(), manifest)
+	}
+}
+
+// TestRouteBlobMiss_UpstreamGet exercises serveFetchedBlob with a GET request — blob not in
+// store, upstreamFallback=true, upstream serves the blob → body written to client.
+func TestRouteBlobMiss_UpstreamGet(t *testing.T) {
+	blobData := []byte("upstream blob content")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(blobData)))
+		// Set a hop-by-hop header to exercise the copyResponseHeaders continue path.
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(blobData)
+	}))
+	defer upstream.Close()
+
+	store := newEmptyOCITestStore()
+	mux := newRegistryFallbackMux(store, WithUpstreamFallback(true), WithUpstreamRegistry(upstream.URL))
+
+	unknownDigest := "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/blobs/"+unknownDigest, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if string(rec.Body.Bytes()) != string(blobData) {
+		t.Errorf("body = %q, want %q", rec.Body.Bytes(), blobData)
+	}
+}
+
+// TestRouteBlobMiss_UpstreamHead exercises the HEAD path in serveFetchedBlob — blob not in
+// store, upstreamFallback=true, upstream returns 200 for HEAD → no body written.
+func TestRouteBlobMiss_UpstreamHead(t *testing.T) {
+	blobData := []byte("upstream blob content")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(blobData)))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	store := newEmptyOCITestStore()
+	mux := newRegistryFallbackMux(store, WithUpstreamFallback(true), WithUpstreamRegistry(upstream.URL))
+
+	unknownDigest := "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	req := httptest.NewRequest(http.MethodHead, "/v2/library/nginx/blobs/"+unknownDigest, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("HEAD should have no body, got %d bytes", rec.Body.Len())
+	}
+}
+
+// TestServeFetchedManifest_HEAD exercises the HEAD branch in serveFetchedManifest — when the
+// upstream serves a 200 for a HEAD manifest request, no body is written.
+func TestServeFetchedManifest_HEAD(t *testing.T) {
+	manifest := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json"}`)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(manifest)
+	}))
+	defer upstream.Close()
+
+	store := newEmptyOCITestStore()
+	mux := newRegistryFallbackMux(store, WithUpstreamFallback(true), WithUpstreamRegistry(upstream.URL))
+
+	req := httptest.NewRequest(http.MethodHead, "/v2/library/nginx/manifests/latest", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("HEAD response should have no body, got %d bytes", rec.Body.Len())
+	}
+	if rec.Header().Get("Docker-Content-Digest") == "" {
+		t.Error("missing Docker-Content-Digest header")
+	}
+}
