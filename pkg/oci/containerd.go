@@ -63,9 +63,7 @@ func (cs *ContainerdStore) Init(ctx context.Context) error {
 		// Metadata DB may not exist or be locked — warn but continue
 		slog.Warn("containerd metadata DB load failed (tag resolution unavailable)", "error", err)
 	}
-	if err := cs.buildImageIndex(); err != nil {
-		slog.Warn("containerd image index build failed", "error", err)
-	}
+	cs.buildImageIndex()
 	slog.Info("containerd store initialized",
 		"images", len(cs.images),
 		"tags", len(cs.tags),
@@ -406,7 +404,7 @@ func (cs *ContainerdStore) loadMetadataDB() error {
 }
 
 // buildImageIndex builds the image list from tags and blobs.
-func (cs *ContainerdStore) buildImageIndex() error {
+func (cs *ContainerdStore) buildImageIndex() {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
@@ -430,7 +428,6 @@ func (cs *ContainerdStore) buildImageIndex() error {
 			Size:     size,
 		})
 	}
-	return nil
 }
 
 // normalizeImageRef converts a containerd image reference to a simple repo:tag format.

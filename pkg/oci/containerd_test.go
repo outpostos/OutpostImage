@@ -463,9 +463,7 @@ func TestContainerdStore_BuildImageIndex_WithTags(t *testing.T) {
 	store.blobs[blobDgst] = blobPath
 	store.mu.Unlock()
 
-	if err := store.buildImageIndex(); err != nil {
-		t.Fatalf("buildImageIndex: %v", err)
-	}
+	store.buildImageIndex()
 
 	images, _ := store.ListImages(ctx)
 	var found bool
