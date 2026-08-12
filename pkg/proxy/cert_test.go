@@ -288,6 +288,27 @@ func TestLoadCA_InvalidKeyDER(t *testing.T) {
 	}
 }
 
+// TestSaveCA_MkdirError covers the os.MkdirAll error path in saveCA by passing a
+// path that is an existing file (not a directory). os.MkdirAll returns ENOTDIR.
+func TestSaveCA_MkdirError(t *testing.T) {
+	dir := t.TempDir()
+	caDir := filepath.Join(dir, "ca-dir")
+
+	// Create a file at caDir so os.MkdirAll(caDir, 0700) fails.
+	if err := os.WriteFile(caDir, []byte("I am a file, not a dir"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cm := &CertManager{cache: make(map[string]*tls.Certificate)}
+	if err := cm.generateCA(); err != nil {
+		t.Fatalf("generateCA: %v", err)
+	}
+
+	if err := cm.saveCA(caDir); err == nil {
+		t.Error("expected error when caDir is an existing file (os.MkdirAll should fail)")
+	}
+}
+
 // TestNewCertManager_WithDir_Warn exercises the slog.Warn("failed to save CA") path
 // in NewCertManager when saveCA returns an error (because ca.crt is a directory).
 func TestNewCertManager_WithDir_Warn(t *testing.T) {
