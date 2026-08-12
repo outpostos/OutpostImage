@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/opencontainers/go-digest"
+	bolt "go.etcd.io/bbolt"
 )
 
 func TestContainerdStore_Name(t *testing.T) {
@@ -542,6 +543,388 @@ func TestContainerdStore_Resolve_LibraryPrefix(t *testing.T) {
 	}
 	if got != testDgst {
 		t.Errorf("Resolve() = %s, want %s", got, testDgst)
+	}
+}
+
+// buildFakeMetaDB creates a containerd-style bolt metadata DB at dbPath with
+// the given image entries under namespace "default".
+func buildFakeMetaDB(t *testing.T, dbPath string, images map[string]digest.Digest) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	err = db.Update(func(tx *bolt.Tx) error {
+		v1, err := tx.CreateBucketIfNotExists([]byte("v1"))
+		if err != nil {
+			return err
+		}
+		ns, err := v1.CreateBucketIfNotExists([]byte("default"))
+		if err != nil {
+			return err
+		}
+		imgsBucket, err := ns.CreateBucketIfNotExists([]byte("images"))
+		if err != nil {
+			return err
+		}
+		for name, dgst := range images {
+			imgBucket, err := imgsBucket.CreateBucketIfNotExists([]byte(name))
+			if err != nil {
+				return err
+			}
+			targetBucket, err := imgBucket.CreateBucketIfNotExists([]byte("target"))
+			if err != nil {
+				return err
+			}
+			if err := targetBucket.Put([]byte("digest"), []byte(dgst.String())); err != nil {
+				return err
+			}
+			if err := targetBucket.Put([]byte("mediatype"), []byte("application/vnd.docker.distribution.manifest.v2+json")); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestContainerdStore_LoadMetadataDB_Success exercises the main success path of
+// loadMetadataDB by building a bolt DB with the containerd metadata structure.
+func TestContainerdStore_LoadMetadataDB_Success(t *testing.T) {
+	root := t.TempDir()
+
+	// Create the content store blob dir (required for Init).
+	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
+	if err := os.MkdirAll(blobDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create the bolt metadata DB.
+	dgst := digest.FromString("test-image-data")
+	dbPath := filepath.Join(root, "io.containerd.metadata.v1.bolt", "meta.db")
+	buildFakeMetaDB(t, dbPath, map[string]digest.Digest{
+		"docker.io/library/nginx:latest": dgst,
+		"docker.io/library/alpine:3.18":  digest.FromString("alpine-data"),
+	})
+
+	store := NewContainerdStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	store.mu.RLock()
+	tagCount := len(store.tags)
+	store.mu.RUnlock()
+
+	if tagCount < 2 {
+		t.Errorf("expected at least 2 tags loaded from metadata DB, got %d", tagCount)
+	}
+
+	// Verify a known tag is resolvable.
+	got, err := store.Resolve(context.Background(), "docker.io/library/nginx:latest")
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if got != dgst {
+		t.Errorf("Resolve() = %s, want %s", got, dgst)
+	}
+}
+
+// TestContainerdStore_LoadMetadataDB_EmptyV1 exercises the `if v1 == nil { return nil }`
+// branch by creating a bolt DB with no "v1" bucket.
+func TestContainerdStore_LoadMetadataDB_EmptyV1(t *testing.T) {
+	root := t.TempDir()
+
+	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
+	if err := os.MkdirAll(blobDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create an empty bolt DB (no v1 bucket).
+	dbPath := filepath.Join(root, "io.containerd.metadata.v1.bolt", "meta.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	emptyDB, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyDB.Close()
+
+	store := NewContainerdStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	store.mu.RLock()
+	tagCount := len(store.tags)
+	store.mu.RUnlock()
+
+	if tagCount != 0 {
+		t.Errorf("expected 0 tags for empty DB, got %d", tagCount)
+	}
+}
+
+// TestContainerdStore_LoadMetadataDB_NoImagesOrTargetBuckets exercises the nil-bucket
+// guard branches (nsBucket, imagesBucket, imageBucket, targetBucket checks).
+func TestContainerdStore_LoadMetadataDB_NoImagesOrTargetBuckets(t *testing.T) {
+	root := t.TempDir()
+
+	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
+	if err := os.MkdirAll(blobDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build a DB that has v1/default but NO "images" bucket.
+	dbPath := filepath.Join(root, "io.containerd.metadata.v1.bolt", "meta.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(func(tx *bolt.Tx) error {
+		v1, _ := tx.CreateBucketIfNotExists([]byte("v1"))
+		// Create namespace but no "images" bucket inside it.
+		v1.CreateBucketIfNotExists([]byte("default"))
+		return nil
+	}); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	store := NewContainerdStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	store.mu.RLock()
+	tagCount := len(store.tags)
+	store.mu.RUnlock()
+
+	if tagCount != 0 {
+		t.Errorf("expected 0 tags when no images bucket, got %d", tagCount)
+	}
+}
+
+// TestContainerdStore_LoadMetadataDB_BadDigest exercises the `digest.Parse` error
+// branch by inserting a malformed digest into the target bucket.
+func TestContainerdStore_LoadMetadataDB_BadDigest(t *testing.T) {
+	root := t.TempDir()
+
+	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
+	if err := os.MkdirAll(blobDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	dbPath := filepath.Join(root, "io.containerd.metadata.v1.bolt", "meta.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(func(tx *bolt.Tx) error {
+		v1, _ := tx.CreateBucketIfNotExists([]byte("v1"))
+		ns, _ := v1.CreateBucketIfNotExists([]byte("default"))
+		imgs, _ := ns.CreateBucketIfNotExists([]byte("images"))
+		imgBucket, _ := imgs.CreateBucketIfNotExists([]byte("docker.io/library/nginx:latest"))
+		target, _ := imgBucket.CreateBucketIfNotExists([]byte("target"))
+		// Insert a malformed digest.
+		target.Put([]byte("digest"), []byte("not-a-valid-digest"))
+		return nil
+	}); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	store := NewContainerdStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	// With a bad digest, the image should be skipped (tags = 0).
+	store.mu.RLock()
+	tagCount := len(store.tags)
+	store.mu.RUnlock()
+
+	if tagCount != 0 {
+		t.Errorf("expected 0 tags with bad digest, got %d", tagCount)
+	}
+}
+
+// TestContainerdStore_LoadMetadataDB_NoTargetBucket exercises the `targetBucket == nil`
+// branch by creating an image bucket with no "target" sub-bucket.
+func TestContainerdStore_LoadMetadataDB_NoTargetBucket(t *testing.T) {
+	root := t.TempDir()
+
+	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
+	if err := os.MkdirAll(blobDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	dbPath := filepath.Join(root, "io.containerd.metadata.v1.bolt", "meta.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(func(tx *bolt.Tx) error {
+		v1, _ := tx.CreateBucketIfNotExists([]byte("v1"))
+		ns, _ := v1.CreateBucketIfNotExists([]byte("default"))
+		imgs, _ := ns.CreateBucketIfNotExists([]byte("images"))
+		// Create an image bucket but do NOT create a "target" sub-bucket.
+		imgs.CreateBucketIfNotExists([]byte("docker.io/library/nginx:latest"))
+		return nil
+	}); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	store := NewContainerdStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	store.mu.RLock()
+	tagCount := len(store.tags)
+	store.mu.RUnlock()
+
+	if tagCount != 0 {
+		t.Errorf("expected 0 tags when no target bucket, got %d", tagCount)
+	}
+}
+
+// TestContainerdStore_LoadMetadataDB_NoDigestKey exercises the `digestBytes == nil`
+// branch by creating a target bucket without a "digest" key.
+func TestContainerdStore_LoadMetadataDB_NoDigestKey(t *testing.T) {
+	root := t.TempDir()
+
+	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
+	if err := os.MkdirAll(blobDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	dbPath := filepath.Join(root, "io.containerd.metadata.v1.bolt", "meta.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(func(tx *bolt.Tx) error {
+		v1, _ := tx.CreateBucketIfNotExists([]byte("v1"))
+		ns, _ := v1.CreateBucketIfNotExists([]byte("default"))
+		imgs, _ := ns.CreateBucketIfNotExists([]byte("images"))
+		imgBucket, _ := imgs.CreateBucketIfNotExists([]byte("docker.io/library/nginx:latest"))
+		target, _ := imgBucket.CreateBucketIfNotExists([]byte("target"))
+		// Put mediatype but NOT digest.
+		target.Put([]byte("mediatype"), []byte("application/vnd.docker.distribution.manifest.v2+json"))
+		return nil
+	}); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	store := NewContainerdStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	store.mu.RLock()
+	tagCount := len(store.tags)
+	store.mu.RUnlock()
+
+	if tagCount != 0 {
+		t.Errorf("expected 0 tags when no digest key, got %d", tagCount)
+	}
+}
+
+// TestContainerdStore_LoadMetadataDB_PlainImageKey exercises the `imageBucket == nil`
+// guard by inserting a plain key-value pair in imagesBucket (not a nested bucket).
+func TestContainerdStore_LoadMetadataDB_PlainImageKey(t *testing.T) {
+	root := t.TempDir()
+
+	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
+	if err := os.MkdirAll(blobDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	dbPath := filepath.Join(root, "io.containerd.metadata.v1.bolt", "meta.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(func(tx *bolt.Tx) error {
+		v1, _ := tx.CreateBucketIfNotExists([]byte("v1"))
+		ns, _ := v1.CreateBucketIfNotExists([]byte("default"))
+		imgs, _ := ns.CreateBucketIfNotExists([]byte("images"))
+		// Insert a plain key-value pair instead of a nested bucket.
+		// Bucket(key) returns nil for plain values so imageBucket == nil.
+		imgs.Put([]byte("plain-entry"), []byte("not-a-bucket"))
+		return nil
+	}); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	store := NewContainerdStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	store.mu.RLock()
+	tagCount := len(store.tags)
+	store.mu.RUnlock()
+
+	if tagCount != 0 {
+		t.Errorf("expected 0 tags for plain-key entry, got %d", tagCount)
+	}
+}
+
+// TestContainerdStore_LoadMetadataDB_CorruptDB exercises the bolt.Open error path
+// by providing a file that is not a valid bolt database.
+func TestContainerdStore_LoadMetadataDB_CorruptDB(t *testing.T) {
+	root := t.TempDir()
+
+	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
+	if err := os.MkdirAll(blobDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write random bytes to the DB path — bolt should fail to open it.
+	dbPath := filepath.Join(root, "io.containerd.metadata.v1.bolt", "meta.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dbPath, []byte("this is not a valid bolt database"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewContainerdStore(root)
+	// Init should not fail even though loadMetadataDB fails (it only logs a warning).
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatalf("Init() should not propagate loadMetadataDB error, got: %v", err)
 	}
 }
 
