@@ -194,6 +194,25 @@ func TestMDNSService_Advertise_InterfaceError(t *testing.T) {
 	}
 }
 
+// TestMDNSService_Advertise_NewMDNSServiceError exercises the mdns.NewMDNSService error
+// path in Advertise. When Port is 0 the hashicorp/mdns library returns
+// "missing service port", causing Advertise to return an error wrapping that message.
+func TestMDNSService_Advertise_NewMDNSServiceError(t *testing.T) {
+	svc := NewMDNSService(MDNSConfig{
+		Port:   0, // triggers "missing service port" in mdns.NewMDNSService
+		NodeID: "test-node",
+	})
+
+	err := svc.Advertise()
+	if err == nil {
+		svc.Shutdown()
+		t.Fatal("expected error when Port is 0 (mdns.NewMDNSService should fail)")
+	}
+	if svc.server != nil {
+		t.Error("server should be nil when Advertise fails at NewMDNSService")
+	}
+}
+
 // TestMDNSService_QueryAndMerge exercises the queryAndMerge path end-to-end.
 // In a test environment without mDNS multicast, Query fails or times out quickly;
 // the defer close(entries) fix ensures the for-range loop completes and

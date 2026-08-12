@@ -1292,6 +1292,74 @@ func TestContainerdStore_Subscribe_WriteEvent(t *testing.T) {
 	}
 }
 
+// TestContainerdStore_Subscribe_FlushInvalidDigest exercises the `continue` path inside
+// the flush() closure in Subscribe. When a file with a name that is NOT a valid sha256 hex
+// digest is created in the blob dir, it is queued in the pending map. When the debounce
+// timer fires and flush() iterates over pending, digest.Parse("sha256:"+name) fails →
+// the entry is skipped (continue). A subsequent valid blob creation confirms the goroutine
+// is still alive after the skip.
+func TestContainerdStore_Subscribe_FlushInvalidDigest(t *testing.T) {
+	store, root := setupContainerdTestStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
+
+	ch, err := store.Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	// Let the watcher start.
+	time.Sleep(100 * time.Millisecond)
+
+	// Create a file whose name is not a valid sha256 hex string. The event handler will
+	// queue it in pending; flush() will call digest.Parse("sha256:not-valid") → fail → continue.
+	invalidPath := filepath.Join(blobDir, "not-a-valid-digest")
+	if err := os.WriteFile(invalidPath, []byte("invalid"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the debounce delay (500ms) + buffer so flush() has been called.
+	time.Sleep(700 * time.Millisecond)
+
+	// No event should have been emitted for the invalid file.
+	select {
+	case ev, ok := <-ch:
+		if ok {
+			t.Errorf("unexpected event for invalid digest file: %v", ev)
+		}
+	default:
+		// Good — no event emitted.
+	}
+
+	// Verify the goroutine is still alive by creating a valid blob.
+	validContent := []byte("valid blob after flush invalid digest test")
+	validDigest := digest.FromBytes(validContent)
+	if err := os.WriteFile(filepath.Join(blobDir, validDigest.Encoded()), validContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case ev, ok := <-ch:
+		if !ok {
+			t.Fatal("channel closed unexpectedly")
+		}
+		if ev.Type != EventCreate {
+			t.Errorf("expected EventCreate, got %v", ev.Type)
+		}
+		if ev.Digest != validDigest {
+			t.Errorf("expected digest %s, got %s", validDigest, ev.Digest)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("timeout: goroutine did not emit event for valid blob after invalid-digest flush")
+	}
+}
+
 // TestContainerdStore_Subscribe_Debounce exercises the timer.Stop() path in the
 // Subscribe debounce goroutine by sending two file events in rapid succession.
 // The second event arrives before the debounce timer fires, causing timer.Stop().
