@@ -1571,6 +1571,70 @@ func TestBuildImageManifest_InvalidJSON(t *testing.T) {
 	}
 }
 
+// TestDockerStore_ScanImageDB_InvalidDiffID exercises the `continue` path in the
+// DiffID parse loop inside scanImageDB: when a config's rootfs.diff_ids contains
+// a non-digest string, digest.Parse fails and the entry is silently skipped.
+func TestDockerStore_ScanImageDB_InvalidDiffID(t *testing.T) {
+	root := t.TempDir()
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+	if err := os.MkdirAll(imagedbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "image", "overlay2", "layerdb", "sha256"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "image", "overlay2", "repositories.json"),
+		[]byte(`{"Repositories":{}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Config with a valid JSON structure but invalid DiffID string — causes digest.Parse
+	// to fail inside the DiffID loop, hitting the `continue` branch.
+	configData := []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":["not-a-valid-digest"]}}`)
+	dgst := digest.FromBytes(configData)
+	if err := os.WriteFile(filepath.Join(imagedbDir, dgst.Encoded()), configData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewDockerStore(root)
+	// Init should succeed; the invalid DiffID is silently skipped.
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatalf("Init should succeed with invalid diff_id: %v", err)
+	}
+	images, _ := store.ListImages(context.Background())
+	if len(images) != 1 {
+		t.Fatalf("expected 1 image (config scanned), got %d", len(images))
+	}
+}
+
+// TestBuildImageManifest_EmptyConfigPath exercises the `configPath == ""` branch in
+// buildImageManifest: when a blob is registered in ds.blobs with an empty path,
+// buildImageManifest returns immediately without building a manifest.
+func TestBuildImageManifest_EmptyConfigPath(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inject a blob entry with an empty path — simulates a rewritten config registered
+	// by a previous buildImageManifest run (ds.blobs[newConfigDigest] = "").
+	ghostDigest := digest.FromString("empty-path-blob")
+	store.mu.Lock()
+	store.blobs[ghostDigest] = ""
+	store.mu.Unlock()
+
+	// buildImageManifest should return immediately (no manifest, no panic).
+	store.buildImageManifest(ghostDigest)
+
+	store.mu.RLock()
+	_, hasManifest := store.manifests[ghostDigest]
+	store.mu.RUnlock()
+	if hasManifest {
+		t.Error("expected no manifest for blob with empty config path")
+	}
+}
+
 // TestDockerStore_Resolve_NoColon covers the len(parts) != 2 early-return path in
 // Resolve when the reference contains no colon (no tag separator).
 func TestDockerStore_Resolve_NoColon(t *testing.T) {
