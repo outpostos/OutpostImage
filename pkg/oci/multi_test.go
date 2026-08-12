@@ -337,6 +337,55 @@ func TestDetectStores_FullDockerFixture(t *testing.T) {
 	}
 }
 
+// TestDetectStores_DockerInitFails covers the slog.Warn("docker store init failed")
+// path in DetectStores when the imagedb directory exists but Init returns an error.
+// We force Init to fail by writing invalid JSON to repositories.json.
+func TestDetectStores_DockerInitFails(t *testing.T) {
+	dockerRoot := t.TempDir()
+	// Create the imagedb directory so DetectStores' os.Stat check passes.
+	imagedbDir := filepath.Join(dockerRoot, "image", "overlay2", "imagedb")
+	if err := os.MkdirAll(imagedbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Write invalid JSON to repositories.json so loadRepositories (and thus Init) fails.
+	reposPath := filepath.Join(dockerRoot, "image", "overlay2", "repositories.json")
+	if err := os.WriteFile(reposPath, []byte("{invalid json content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	containerdRoot := t.TempDir() // no containerd dirs
+	stores := DetectStores(context.Background(), dockerRoot, containerdRoot)
+	// Init failed, so the store should NOT be added.
+	if len(stores) != 0 {
+		t.Errorf("expected 0 stores when docker init fails, got %d", len(stores))
+	}
+}
+
+// TestDetectStores_ContainerdInitFails covers the slog.Warn("containerd store init failed")
+// path in DetectStores when the blobs directory exists but Init returns an error.
+// We force Init to fail by making the sha256 content dir a regular file so ReadDir fails.
+func TestDetectStores_ContainerdInitFails(t *testing.T) {
+	dockerRoot := t.TempDir() // no Docker dirs
+
+	containerdRoot := t.TempDir()
+	// Create the blobs directory so DetectStores' os.Stat check passes.
+	blobsDir := filepath.Join(containerdRoot, "io.containerd.content.v1.content", "blobs")
+	if err := os.MkdirAll(blobsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Create sha256 as a regular file so os.ReadDir(sha256) in scanContentStore fails.
+	sha256Path := filepath.Join(blobsDir, "sha256")
+	if err := os.WriteFile(sha256Path, []byte("not a directory"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stores := DetectStores(context.Background(), dockerRoot, containerdRoot)
+	// Init failed (scanContentStore returns ENOTDIR), so the store should NOT be added.
+	if len(stores) != 0 {
+		t.Errorf("expected 0 stores when containerd init fails, got %d", len(stores))
+	}
+}
+
 // errStore is a Store that returns errors from ListImages and Subscribe.
 type errStore struct {
 	*mockStore

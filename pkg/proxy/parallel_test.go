@@ -244,6 +244,28 @@ func TestFetchChunk_InvalidURL(t *testing.T) {
 	}
 }
 
+// TestFetchSingle_ConnectionRefused exercises the http.Client.Do error path in
+// fetchSingle when the peer is unreachable (connection refused).
+func TestFetchSingle_ConnectionRefused(t *testing.T) {
+	pf := NewParallelFetcher(DefaultChunkSize, DefaultParallelism)
+	// Port 1 is always refused.
+	_, err := pf.fetchSingle(context.Background(), "127.0.0.1:1", "/v2/test/blobs/sha256:abc")
+	if err == nil {
+		t.Error("expected error for connection refused in fetchSingle")
+	}
+}
+
+// TestFetchChunk_ConnectionRefused exercises the http.Client.Do error path in
+// fetchChunk when the peer is unreachable (connection refused).
+func TestFetchChunk_ConnectionRefused(t *testing.T) {
+	pf := NewParallelFetcher(DefaultChunkSize, DefaultParallelism)
+	// Port 1 is always refused.
+	_, err := pf.fetchChunk(context.Background(), "127.0.0.1:1", "/v2/test/blobs/sha256:abc", 0, 99)
+	if err == nil {
+		t.Error("expected error for connection refused in fetchChunk")
+	}
+}
+
 // TestParallelFetcher_AllChunksFail exercises the chunk-failure accumulation and
 // reassembly error path: when every chunk attempt fails, Fetch returns an error.
 // Uses 2 fail servers so len(peers)>1 forces the chunked code path.

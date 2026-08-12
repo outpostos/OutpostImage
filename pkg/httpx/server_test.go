@@ -92,3 +92,27 @@ func TestServe_StartsAndShutdown(t *testing.T) {
 		t.Fatalf("errgroup error: %v", err)
 	}
 }
+
+// TestServe_BindError exercises the error-return path in Serve's ListenAndServe goroutine
+// when the address is already in use (ListenAndServe returns an error != ErrServerClosed).
+func TestServe_BindError(t *testing.T) {
+	// Keep the listener open so the HTTP server cannot bind to the same address.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	addr := ln.Addr().String()
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	g, gctx := errgroup.WithContext(ctx)
+	Serve(gctx, g, addr, handler, "test-bind-error")
+
+	// The server fails to bind immediately; g.Wait() should return a non-nil error.
+	if err := g.Wait(); err == nil {
+		t.Error("expected error when address is already in use")
+	}
+}
