@@ -179,3 +179,64 @@ func TestLoadCA_MissingFiles(t *testing.T) {
 		t.Error("expected error for missing ca.crt")
 	}
 }
+
+// TestSaveCA_CertWriteError exercises the os.WriteFile(ca.crt) error path by
+// pre-creating a directory at that path so the write returns EISDIR.
+func TestSaveCA_CertWriteError(t *testing.T) {
+	dir := t.TempDir()
+
+	// Pre-create "ca.crt" as a subdirectory so WriteFile on it returns an error.
+	if err := os.MkdirAll(filepath.Join(dir, "ca.crt"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cm := &CertManager{cache: make(map[string]*tls.Certificate)}
+	if err := cm.generateCA(); err != nil {
+		t.Fatalf("generateCA: %v", err)
+	}
+
+	if err := cm.saveCA(dir); err == nil {
+		t.Error("expected error when ca.crt path is a directory")
+	}
+}
+
+// TestSaveCA_KeyWriteError exercises the os.WriteFile(ca.key) error path by
+// pre-creating a directory at that path so the write returns EISDIR.
+func TestSaveCA_KeyWriteError(t *testing.T) {
+	dir := t.TempDir()
+
+	// Pre-create "ca.key" as a subdirectory. ca.crt write succeeds (path is writable);
+	// ca.key write fails (path is a directory).
+	if err := os.MkdirAll(filepath.Join(dir, "ca.key"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cm := &CertManager{cache: make(map[string]*tls.Certificate)}
+	if err := cm.generateCA(); err != nil {
+		t.Fatalf("generateCA: %v", err)
+	}
+
+	if err := cm.saveCA(dir); err == nil {
+		t.Error("expected error when ca.key path is a directory")
+	}
+}
+
+// TestNewCertManager_WithDir_Warn exercises the slog.Warn("failed to save CA") path
+// in NewCertManager when saveCA returns an error (because ca.crt is a directory).
+func TestNewCertManager_WithDir_Warn(t *testing.T) {
+	dir := t.TempDir()
+
+	// Make ca.crt a directory so saveCA fails on write, triggering the Warn path.
+	if err := os.MkdirAll(filepath.Join(dir, "ca.crt"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// NewCertManager still succeeds (it just logs a warning on save failure).
+	cm, err := NewCertManager(dir)
+	if err != nil {
+		t.Fatalf("NewCertManager should succeed even when save fails: %v", err)
+	}
+	if cm == nil {
+		t.Fatal("expected non-nil CertManager")
+	}
+}

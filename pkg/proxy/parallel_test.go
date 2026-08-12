@@ -223,3 +223,64 @@ func TestParallelFetcher_StreamFetch(t *testing.T) {
 		t.Errorf("body = %q, want %q", w.Body.String(), string(data))
 	}
 }
+
+// TestFetchSingle_InvalidURL exercises the http.NewRequestWithContext error path
+// in fetchSingle when the peer address is malformed.
+func TestFetchSingle_InvalidURL(t *testing.T) {
+	pf := NewParallelFetcher(DefaultChunkSize, DefaultParallelism)
+	_, err := pf.fetchSingle(context.Background(), "bad host]", "/path")
+	if err == nil {
+		t.Error("expected error for invalid peer URL")
+	}
+}
+
+// TestFetchChunk_InvalidURL exercises the http.NewRequestWithContext error path
+// in fetchChunk when the peer address is malformed.
+func TestFetchChunk_InvalidURL(t *testing.T) {
+	pf := NewParallelFetcher(DefaultChunkSize, DefaultParallelism)
+	_, err := pf.fetchChunk(context.Background(), "bad host]", "/path", 0, 99)
+	if err == nil {
+		t.Error("expected error for invalid peer URL")
+	}
+}
+
+// TestParallelFetcher_AllChunksFail exercises the chunk-failure accumulation and
+// reassembly error path: when every chunk attempt fails, Fetch returns an error.
+// Uses 2 fail servers so len(peers)>1 forces the chunked code path.
+func TestParallelFetcher_AllChunksFail(t *testing.T) {
+	// Both servers always return 500 so fetchChunk fails for every chunk attempt.
+	makeFail := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+	}
+	srv1 := makeFail()
+	defer srv1.Close()
+	srv2 := makeFail()
+	defer srv2.Close()
+
+	addr1 := strings.TrimPrefix(srv1.URL, "http://")
+	addr2 := strings.TrimPrefix(srv2.URL, "http://")
+
+	// chunkSize=1 → 10 chunks; 2 peers → chunked path (not fetchSingle).
+	pf := NewParallelFetcher(1, 4)
+	balancer := routing.NewBalancer([]string{addr1, addr2})
+
+	_, err := pf.Fetch(context.Background(), balancer, "/v2/test/blobs/sha256:abc", 10)
+	if err == nil {
+		t.Error("expected error when all chunk fetches fail")
+	}
+}
+
+// TestStreamFetch_FetchError exercises the StreamFetch error path when Fetch fails.
+func TestStreamFetch_FetchError(t *testing.T) {
+	// Use a balancer with no peers so Fetch returns "no peers available".
+	balancer := routing.NewBalancer(nil)
+	pf := NewParallelFetcher(DefaultChunkSize, DefaultParallelism)
+	w := httptest.NewRecorder()
+
+	err := pf.StreamFetch(context.Background(), w, balancer, "/v2/test/blobs/sha256:abc", 100)
+	if err == nil {
+		t.Error("expected error when Fetch fails")
+	}
+}

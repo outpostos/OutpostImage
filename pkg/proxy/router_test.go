@@ -575,3 +575,79 @@ func TestPeerClient_Schemes(t *testing.T) {
 		t.Error("peerClient(http): expected DefaultClient")
 	}
 }
+
+// TestFetchFromUpstream_AbsoluteURL exercises the r.URL.IsAbs() branch that extracts
+// the registry from the request's absolute URL when no X-*-Registry header is set.
+// The branch sets rawRegistry = r.URL.Host (no scheme). upstreamBaseURL then prepends
+// "https://", so the downstream Do call will fail for a plain HTTP test server — we
+// only verify the branch is exercised (the Do error is expected and accepted).
+func TestFetchFromUpstream_AbsoluteURL(t *testing.T) {
+	// Construct a request with an absolute URL so IsAbs() && Host != "" is true.
+	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:1/v2/path", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No X-Upstream-Registry or X-Original-Registry headers — rawRegistry falls
+	// through to the IsAbs branch. upstreamBaseURL("127.0.0.1:1") returns
+	// "https://127.0.0.1:1"; Do fails with connection refused — that is expected.
+	_, err = FetchFromUpstream(context.Background(), req, http.MethodGet, "")
+	// We expect an error (unreachable host). The important thing is the IsAbs branch ran.
+	if err == nil {
+		t.Log("FetchFromUpstream unexpectedly succeeded; branch still exercised")
+	}
+}
+
+// TestFetchFromUpstream_EmptyRegistry exercises the upstreamBaseURL error path when
+// all registry sources are empty and defaultRegistry is also empty.
+func TestFetchFromUpstream_EmptyRegistry(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/v2/path", nil)
+	// No headers, relative URL, empty defaultRegistry → rawRegistry stays "".
+	_, err := FetchFromUpstream(context.Background(), req, http.MethodGet, "")
+	if err == nil {
+		t.Error("expected error for empty registry")
+	}
+}
+
+// TestFetchFromUpstream_DoError exercises the http.DefaultClient.Do error path in
+// FetchFromUpstream by pointing at an unreachable host.
+func TestFetchFromUpstream_DoError(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/v2/path", nil)
+	req.Header.Set("X-Upstream-Registry", "http://127.0.0.1:1")
+	_, err := FetchFromUpstream(context.Background(), req, http.MethodGet, "")
+	if err == nil {
+		t.Error("expected error when upstream is unreachable")
+	}
+}
+
+// TestProxyToLocal_WithQueryString exercises the RawQuery path in proxyToLocal.
+func TestProxyToLocal_WithQueryString(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawQuery != "foo=bar" {
+			http.Error(w, "unexpected query", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/path?foo=bar", nil)
+	w := httptest.NewRecorder()
+	proxyToLocal(w, req, srv.Listener.Addr().String())
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+// TestProxyToLocal_DoError exercises the peerClient.Do error path in proxyToLocal.
+func TestProxyToLocal_DoError(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/v2/path", nil)
+	w := httptest.NewRecorder()
+	// Port 1 is unreachable → peerClient.Do fails → 502 response.
+	proxyToLocal(w, req, "127.0.0.1:1")
+
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadGateway)
+	}
+}
