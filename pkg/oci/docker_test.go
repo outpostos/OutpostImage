@@ -581,6 +581,60 @@ func TestDockerStore_Subscribe_ContextDoneWhileEmitting(t *testing.T) {
 	}
 }
 
+// TestDockerStore_Subscribe_ContextDoneWhileEmittingDelete covers the ctx.Done() path
+// inside the EventDelete select in Subscribe. We fill ch (capacity 16) with 16 Create
+// events and then delete a file. The goroutine blocks trying to emit the EventDelete
+// because ch is full; cancelling ctx triggers `case <-ctx.Done(): return`.
+func TestDockerStore_Subscribe_ContextDoneWhileEmittingDelete(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch, err := store.Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+
+	// Create 16 files to fill ch completely.
+	for i := 1; i <= 16; i++ {
+		name := fmt.Sprintf("%064x", i)
+		if err := os.WriteFile(filepath.Join(imagedbDir, name), []byte("{}"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Give fsnotify time to deliver all 16 Create events so ch is full.
+	time.Sleep(200 * time.Millisecond)
+
+	// Remove file 1 — generates a Remove event. The goroutine will try to send
+	// EventDelete to ch (which is full) and block in the select.
+	if err := os.Remove(filepath.Join(imagedbDir, fmt.Sprintf("%064x", 1))); err != nil {
+		t.Fatal(err)
+	}
+
+	// Give the goroutine time to pick up the Remove event and block on emit.
+	time.Sleep(100 * time.Millisecond)
+
+	// Cancel context while the goroutine is blocked on the Delete emit.
+	cancel()
+
+	// Goroutine should exit and close ch.
+	select {
+	case _, ok := <-ch:
+		if ok {
+			for range ch {
+			}
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("channel not closed after context cancel (delete path)")
+	}
+}
+
 // TestDockerStore_Subscribe_AddError verifies that Subscribe returns an error when the
 // imagedb directory does not exist (empty root).
 func TestDockerStore_Subscribe_AddError(t *testing.T) {
