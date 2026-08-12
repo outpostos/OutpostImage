@@ -788,3 +788,51 @@ func TestRequestRouter_LegacyP2P_FetchError(t *testing.T) {
 		t.Error("expected legacy P2P fetch error to return false (fall back to upstream)")
 	}
 }
+
+// TestRequestRouter_ManifestLocal_RelativeURL exercises the `origHost = r.Host` fallback
+// path in RequestRouter when the request uses a relative URL (r.URL.Host == "") but
+// carries a Host header that provides the registry name.
+func TestRequestRouter_ManifestLocal_RelativeURL(t *testing.T) {
+	tracker := setupRouterTest(t)
+
+	manifest := []byte(`{"schemaVersion":2}`)
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(manifest)
+	}))
+	defer local.Close()
+
+	interceptor := RequestRouter(tracker, local.Listener.Addr().String())
+
+	// Relative URL: r.URL.Host == "" → RequestRouter falls back to r.Host.
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/nginx/manifests/latest", nil)
+	req.Host = "registry.example.com"
+	rec := httptest.NewRecorder()
+
+	handled := interceptor(rec, req)
+	if !handled {
+		t.Fatal("expected manifest to be served from local registry")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// TestFetchFromPeer_InvalidMethod covers the http.NewRequestWithContext error path in
+// FetchFromPeer by passing a method name that contains a space (invalid per RFC 7230).
+func TestFetchFromPeer_InvalidMethod(t *testing.T) {
+	_, err := FetchFromPeer(context.Background(), "localhost:8080", "INVALID METHOD", "/v2/path", nil, "")
+	if err == nil {
+		t.Fatal("expected error for invalid HTTP method")
+	}
+}
+
+// TestFetchFromPeer_ConnectionRefused covers the http.Client.Do error path in
+// FetchFromPeer by targeting a port that is not listening.
+func TestFetchFromPeer_ConnectionRefused(t *testing.T) {
+	_, err := FetchFromPeer(context.Background(), "localhost:1", http.MethodGet, "/v2/path", nil, "")
+	if err == nil {
+		t.Fatal("expected error when connecting to a closed port")
+	}
+}
