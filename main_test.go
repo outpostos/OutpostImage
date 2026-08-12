@@ -289,6 +289,52 @@ func TestRun_WithK8sDiscovery_Fails(t *testing.T) {
 	}
 }
 
+// TestRun_WithK8sDiscovery_Succeeds exercises the run() K8sDiscovery success path
+// (else branch at line 157: g.Go k8sDisc.Discover). It sets up the minimal
+// in-cluster environment (SA files + env vars) so NewKubernetesDiscovery succeeds,
+// then verifies run() exits cleanly on SIGTERM. Skipped when SA files already
+// exist (real cluster) or cannot be created.
+func TestRun_WithK8sDiscovery_Succeeds(t *testing.T) {
+	const saDir = "/var/run/secrets/kubernetes.io/serviceaccount"
+
+	if _, err := os.Stat(saDir); err == nil {
+		t.Skip("SA dir already exists — skipping synthetic in-cluster test")
+	}
+	if err := os.MkdirAll(saDir, 0755); err != nil {
+		t.Skipf("cannot create SA dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll("/var/run/secrets") })
+
+	if err := os.WriteFile(saDir+"/namespace", []byte("test-namespace"), 0644); err != nil {
+		t.Skipf("cannot write namespace file: %v", err)
+	}
+	if err := os.WriteFile(saDir+"/token", []byte("fake-token"), 0644); err != nil {
+		t.Skipf("cannot write token file: %v", err)
+	}
+
+	t.Setenv("KUBERNETES_SERVICE_HOST", "192.0.2.1")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "6443")
+
+	cmd := &RegistryCmd{
+		RegistryAddr:   ":0",
+		ProxyAddr:      ":0",
+		MetricsAddr:    ":0",
+		DockerRoot:     setupDockerRoot(t),
+		ContainerdRoot: t.TempDir(),
+		StoreType:      "auto",
+		MDNSEnabled:    false,
+		K8sDiscovery:   true,
+		K8sNamespace:   "test-namespace",
+		K8sServiceName: "outpostimage",
+		LogLevel:       "ERROR",
+		CADir:          t.TempDir(),
+	}
+
+	if err := runCmdWithSIGTERM(t, cmd, 400*time.Millisecond); err != nil {
+		t.Fatalf("run() returned error after SIGTERM with K8sDiscovery success: %v", err)
+	}
+}
+
 // TestRun_WithMDNS_AdvertiseFails exercises the cmd.MDNSEnabled=true branch when
 // mdnsSvc.Advertise() returns an error (non-existent network interface). The
 // slog.Warn("mDNS advertise failed") path is covered and run() exits cleanly.
