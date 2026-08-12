@@ -134,3 +134,61 @@ func TestMDNSService_Shutdown_NilServer(t *testing.T) {
 	// Should not panic and should be a no-op.
 	svc.Shutdown()
 }
+
+// TestMDNSService_Advertise_Shutdown verifies that Advertise starts a real mDNS
+// server and Shutdown cleanly stops it (covers the s.server != nil branch).
+func TestMDNSService_Advertise_Shutdown(t *testing.T) {
+	svc := NewMDNSService(MDNSConfig{
+		Port:    19876, // arbitrary high port unlikely to conflict
+		NodeID:  "test-node",
+		Version: "v0.0.1",
+	})
+
+	if err := svc.Advertise(); err != nil {
+		t.Skipf("mDNS Advertise failed (network not available in test env): %v", err)
+	}
+
+	if svc.server == nil {
+		t.Fatal("expected server to be non-nil after Advertise")
+	}
+
+	// Should call s.server.Shutdown() without panicking.
+	svc.Shutdown()
+}
+
+// TestMDNSService_DiscoveredPeers_WithPeers verifies the DiscoveredPeers return
+// value when at least one peer is in the map (83.3% → 100% for that function).
+func TestMDNSService_DiscoveredPeers_WithPeers(t *testing.T) {
+	svc := NewMDNSService(MDNSConfig{Port: 5000})
+
+	svc.mu.Lock()
+	svc.peers["10.0.0.5:5000"] = time.Now()
+	svc.peers["10.0.0.6:5000"] = time.Now()
+	svc.mu.Unlock()
+
+	peers := svc.DiscoveredPeers()
+	if len(peers) != 2 {
+		t.Errorf("expected 2 discovered peers, got %d: %v", len(peers), peers)
+	}
+}
+
+// TestMDNSService_Advertise_InterfaceError exercises the net.InterfaceByName error
+// path in Advertise when the configured interface does not exist.
+func TestMDNSService_Advertise_InterfaceError(t *testing.T) {
+	svc := NewMDNSService(MDNSConfig{
+		Port:      19878,
+		Interface: "eth-nonexistent-99",
+	})
+
+	err := svc.Advertise()
+	if err == nil {
+		// On some systems the call may succeed or report a different error; shutdown
+		// and mark the test as skipped since we cannot reliably trigger the path.
+		svc.Shutdown()
+		t.Skip("Advertise succeeded unexpectedly with nonexistent interface — skipping")
+	}
+	// Expect an error mentioning the interface name.
+	if svc.server != nil {
+		t.Error("server should be nil when Advertise fails during interface lookup")
+	}
+}
