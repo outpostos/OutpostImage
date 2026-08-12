@@ -239,6 +239,99 @@ func TestContainerdStore_Subscribe(t *testing.T) {
 	}
 }
 
+// TestContainerdStore_Subscribe_WatchAddError exercises the watcher.Add error path
+// in Subscribe when the blob directory does not exist.
+func TestContainerdStore_Subscribe_WatchAddError(t *testing.T) {
+	// Root with no blob dir — Subscribe should fail on watcher.Add.
+	root := t.TempDir()
+	store := NewContainerdStore(root)
+
+	_, err := store.Subscribe(context.Background())
+	if err == nil {
+		t.Fatal("expected error when blob dir does not exist")
+	}
+}
+
+// TestContainerdStore_Subscribe_EventDelete exercises the EventDelete path in the
+// Subscribe debounce goroutine by removing a blob file after subscribing.
+func TestContainerdStore_Subscribe_EventDelete(t *testing.T) {
+	store, root := setupContainerdTestStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
+
+	// Find a blob file to delete.
+	entries, err := os.ReadDir(blobDir)
+	if err != nil || len(entries) == 0 {
+		t.Skip("no blobs to delete")
+	}
+	blobFile := filepath.Join(blobDir, entries[0].Name())
+
+	ch, err := store.Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	// Short delay to let watcher start.
+	time.Sleep(100 * time.Millisecond)
+
+	if err := os.Remove(blobFile); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for a Delete event.
+	select {
+	case event, ok := <-ch:
+		if !ok {
+			t.Error("channel closed unexpectedly")
+		}
+		if event.Type != EventDelete {
+			t.Errorf("expected EventDelete, got %v", event.Type)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("timeout waiting for EventDelete")
+	}
+}
+
+// TestContainerdStore_Subscribe_ContextCancel verifies that the Subscribe goroutine
+// exits cleanly when the context is cancelled (exercises the <-ctx.Done() return).
+func TestContainerdStore_Subscribe_ContextCancel(t *testing.T) {
+	store, _ := setupContainerdTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	ch, err := store.Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	// Cancel immediately.
+	cancel()
+
+	// The channel should be closed after the goroutine exits.
+	select {
+	case _, ok := <-ch:
+		if ok {
+			// Might have received a buffered event; drain and wait for close.
+			select {
+			case <-ch:
+			case <-time.After(2 * time.Second):
+				t.Error("channel not closed after context cancel")
+			}
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("channel not closed after context cancel within 2s")
+	}
+}
+
 func TestContainerdStore_ListImages_Empty(t *testing.T) {
 	root := t.TempDir()
 	blobDir := filepath.Join(root, "io.containerd.content.v1.content", "blobs", "sha256")
