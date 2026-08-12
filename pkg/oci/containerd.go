@@ -108,15 +108,9 @@ func containerdTagCandidates(ref string) ([]string, error) {
 	}
 	name, tag := parts[0], parts[1]
 
-	seen := make(map[string]struct{})
 	candidates := make([]string, 0, 6)
 	add := func(name string) {
-		candidate := name + ":" + tag
-		if _, ok := seen[candidate]; ok {
-			return
-		}
-		seen[candidate] = struct{}{}
-		candidates = append(candidates, candidate)
+		candidates = append(candidates, name+":"+tag)
 	}
 
 	add(name)
