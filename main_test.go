@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestParseAddr(t *testing.T) {
@@ -159,12 +161,180 @@ func TestParseLogLevel(t *testing.T) {
 		{"INFO", slog.LevelInfo},
 		{"", slog.LevelInfo},
 		{"invalid", slog.LevelInfo},
-		{"debug", slog.LevelInfo}, // lowercase not matched
+		{"debug", slog.LevelInfo},
 	}
 	for _, tt := range tests {
 		got := parseLogLevel(tt.input)
 		if got != tt.want {
 			t.Errorf("parseLogLevel(%q) = %v, want %v", tt.input, got, tt.want)
 		}
+	}
+}
+
+// runCmdWithSIGTERM is a helper that launches run(cmd), waits briefly, sends
+// SIGTERM, and blocks until run returns (or times out). Returns whatever
+// run() returns.
+func runCmdWithSIGTERM(t *testing.T, cmd *RegistryCmd, waitBeforeSig time.Duration) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- run(cmd) }()
+
+	time.Sleep(waitBeforeSig)
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("Kill(SIGTERM): %v", err)
+	}
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(15 * time.Second):
+		t.Fatal("run() did not return after SIGTERM within 15s")
+		return nil
+	}
+}
+
+// setupDockerRoot creates a minimal Docker root with the imagedb directory so
+// DockerStore.Subscribe can add its fsnotify watch without returning ENOENT.
+func setupDockerRoot(t *testing.T) string {
+	t.Helper()
+	dockerRoot := t.TempDir()
+	imagedbDir := filepath.Join(dockerRoot, "image", "overlay2", "imagedb", "content", "sha256")
+	if err := os.MkdirAll(imagedbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	return dockerRoot
+}
+
+// TestRun_SIGTERMShutdown exercises the run() function end-to-end. It starts
+// the full server stack on random ports (:0) with mDNS and Kubernetes discovery
+// disabled, then sends SIGTERM to cancel the internal signal.NotifyContext.
+// signal.NotifyContext intercepts SIGTERM (so the process is not killed) and
+// cancels the context, causing all goroutines to drain and run() to return nil.
+//
+// The imagedb directory must exist so DockerStore.Subscribe can add its fsnotify
+// watch; without it Subscribe returns ENOENT, run() exits immediately (unregistering
+// the SIGTERM handler), and the subsequent Kill causes default process termination.
+func TestRun_SIGTERMShutdown(t *testing.T) {
+	cmd := &RegistryCmd{
+		RegistryAddr:   ":0",
+		ProxyAddr:      ":0",
+		MetricsAddr:    ":0",
+		DockerRoot:     setupDockerRoot(t),
+		ContainerdRoot: t.TempDir(),
+		StoreType:      "auto",
+		MDNSEnabled:    false,
+		K8sDiscovery:   false,
+		LogLevel:       "ERROR",
+		CADir:          t.TempDir(),
+	}
+
+	if err := runCmdWithSIGTERM(t, cmd, 300*time.Millisecond); err != nil {
+		t.Fatalf("run() returned error after SIGTERM: %v", err)
+	}
+}
+
+// TestRun_WithPeersFile exercises the cmd.PeersFile != "" branch in run(), which
+// launches pw.WatchFile in an errgroup goroutine.
+func TestRun_WithPeersFile(t *testing.T) {
+	peersFile := filepath.Join(t.TempDir(), "peers.txt")
+	if err := os.WriteFile(peersFile, []byte("# empty\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := &RegistryCmd{
+		RegistryAddr:   ":0",
+		ProxyAddr:      ":0",
+		MetricsAddr:    ":0",
+		DockerRoot:     setupDockerRoot(t),
+		ContainerdRoot: t.TempDir(),
+		StoreType:      "auto",
+		MDNSEnabled:    false,
+		K8sDiscovery:   false,
+		LogLevel:       "ERROR",
+		CADir:          t.TempDir(),
+		PeersFile:      peersFile,
+	}
+
+	if err := runCmdWithSIGTERM(t, cmd, 300*time.Millisecond); err != nil {
+		t.Fatalf("run() returned error after SIGTERM with PeersFile: %v", err)
+	}
+}
+
+// TestRun_WithK8sDiscovery_Fails exercises the cmd.K8sDiscovery=true branch when
+// NewKubernetesDiscovery returns an error (no in-cluster credentials available
+// outside a real Kubernetes cluster). The slog.Warn("kubernetes discovery init
+// failed") path is covered and run() still exits cleanly on SIGTERM.
+func TestRun_WithK8sDiscovery_Fails(t *testing.T) {
+	if _, err := os.Stat("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
+		t.Skip("running inside a Kubernetes cluster — test expects NewKubernetesDiscovery to fail")
+	}
+
+	cmd := &RegistryCmd{
+		RegistryAddr:   ":0",
+		ProxyAddr:      ":0",
+		MetricsAddr:    ":0",
+		DockerRoot:     setupDockerRoot(t),
+		ContainerdRoot: t.TempDir(),
+		StoreType:      "auto",
+		MDNSEnabled:    false,
+		K8sDiscovery:   true,
+		K8sNamespace:   "default",
+		K8sServiceName: "outpostimage",
+		LogLevel:       "ERROR",
+		CADir:          t.TempDir(),
+	}
+
+	if err := runCmdWithSIGTERM(t, cmd, 300*time.Millisecond); err != nil {
+		t.Fatalf("run() returned error after SIGTERM with K8sDiscovery: %v", err)
+	}
+}
+
+// TestRun_WithMDNS_AdvertiseFails exercises the cmd.MDNSEnabled=true branch when
+// mdnsSvc.Advertise() returns an error (non-existent network interface). The
+// slog.Warn("mDNS advertise failed") path is covered and run() exits cleanly.
+func TestRun_WithMDNS_AdvertiseFails(t *testing.T) {
+	cmd := &RegistryCmd{
+		RegistryAddr:   ":0",
+		ProxyAddr:      ":0",
+		MetricsAddr:    ":0",
+		DockerRoot:     setupDockerRoot(t),
+		ContainerdRoot: t.TempDir(),
+		StoreType:      "auto",
+		MDNSEnabled:    true,
+		MDNSInterface:  "nonexistent0", // causes net.InterfaceByName to fail
+		K8sDiscovery:   false,
+		LogLevel:       "ERROR",
+		CADir:          t.TempDir(),
+	}
+
+	if err := runCmdWithSIGTERM(t, cmd, 300*time.Millisecond); err != nil {
+		t.Fatalf("run() returned error after SIGTERM with failed mDNS: %v", err)
+	}
+}
+
+// TestRun_CADir_MkdirFails exercises the os.MkdirAll(caDir) error path in run()
+// by providing a path where an existing file blocks directory creation.
+func TestRun_CADir_MkdirFails(t *testing.T) {
+	// Create a regular file at the caDir path so os.MkdirAll returns ENOTDIR.
+	caPath := filepath.Join(t.TempDir(), "ca-not-a-dir")
+	if err := os.WriteFile(caPath, []byte("I am a file"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := &RegistryCmd{
+		RegistryAddr:   ":0",
+		ProxyAddr:      ":0",
+		MetricsAddr:    ":0",
+		DockerRoot:     setupDockerRoot(t),
+		ContainerdRoot: t.TempDir(),
+		StoreType:      "auto",
+		MDNSEnabled:    false,
+		K8sDiscovery:   false,
+		LogLevel:       "ERROR",
+		CADir:          caPath,
+	}
+
+	if err := runCmdWithSIGTERM(t, cmd, 300*time.Millisecond); err != nil {
+		t.Fatalf("run() returned error after SIGTERM with bad CADir: %v", err)
 	}
 }
