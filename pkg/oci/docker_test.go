@@ -1480,3 +1480,34 @@ func TestDockerStore_Resolve_NoColon(t *testing.T) {
 		t.Fatal("expected error for ref with no colon")
 	}
 }
+
+// errWriter is an io.Writer that always fails, used to exercise error paths in
+// functions that write to an io.Writer (e.g. tarDirectory).
+type errWriter struct{ err error }
+
+func (e errWriter) Write(_ []byte) (int, error) { return 0, e.err }
+
+// TestTarDirectory_WriteHeaderError exercises the tw.WriteHeader error path in
+// tarDirectory. When the underlying writer fails on every write, the first
+// non-root entry causes tar.Writer.WriteHeader to return an error.
+func TestTarDirectory_WriteHeaderError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("hello"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := tarDirectory(errWriter{err: io.ErrClosedPipe}, dir)
+	if err == nil {
+		t.Fatal("expected error when underlying writer fails")
+	}
+}
+
+// TestTarDirectory_WalkError exercises the `if err != nil { return err }` path at the
+// top of the filepath.Walk callback. When the root directory does not exist, Walk calls
+// the callback with err != nil for the root itself before any entry is visited.
+func TestTarDirectory_WalkError(t *testing.T) {
+	err := tarDirectory(io.Discard, filepath.Join(t.TempDir(), "nonexistent-subdir"))
+	if err == nil {
+		t.Fatal("expected error when walk root does not exist")
+	}
+}
