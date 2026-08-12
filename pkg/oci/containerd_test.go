@@ -1088,6 +1088,28 @@ func TestContainerdStore_LoadMetadataDB_CorruptDB(t *testing.T) {
 	}
 }
 
+// TestContainerdStore_LoadMetadataDB_CreateTempFails exercises the os.CreateTemp error path
+// in loadMetadataDB. Setting TMPDIR to a non-existent directory causes os.CreateTemp to fail.
+func TestContainerdStore_LoadMetadataDB_CreateTempFails(t *testing.T) {
+	root := t.TempDir()
+	dbDir := filepath.Join(root, "io.containerd.metadata.v1.bolt")
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dbDir, "meta.db")
+	if err := os.WriteFile(dbPath, []byte("dummy"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Point TMPDIR to a path that doesn't exist so os.CreateTemp("", ...) fails.
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "nonexistent-tmp"))
+
+	store := NewContainerdStore(root)
+	if err := store.loadMetadataDB(); err == nil {
+		t.Fatal("expected error when os.CreateTemp fails due to bad TMPDIR")
+	}
+}
+
 // TestContainerdStore_LoadMetadataDB_CopyError exercises the io.Copy error path in
 // loadMetadataDB by making meta.db a directory: os.Stat succeeds, os.Open succeeds
 // (returns a dir fd on Linux), but io.Copy fails with EISDIR on the first Read.
