@@ -245,6 +245,8 @@ func TestUpstreamBaseURL(t *testing.T) {
 		{"ghcr.io", "https://ghcr.io", false},
 		{"http://localhost:5000", "http://localhost:5000", false},
 		{"https://registry.example.com/path", "https://registry.example.com", false},
+		// Empty host after scheme — upstreamBaseURL returns an error.
+		{"http:///no-host", "", true},
 	}
 	for _, tt := range tests {
 		got, err := upstreamBaseURL(tt.input)
@@ -287,6 +289,41 @@ func TestHeadBlobSize_NotFound(t *testing.T) {
 	size := headBlobSize(context.Background(), srv.Listener.Addr().String(), "/v2/lib/nginx/blobs/sha256:abc")
 	if size != 0 {
 		t.Errorf("headBlobSize = %d, want 0 for not found", size)
+	}
+}
+
+// TestHeadBlobSize_NoContentLength exercises the size<=0 branch when the server
+// returns 200 without a Content-Length header (resp.ContentLength = -1).
+func TestHeadBlobSize_NoContentLength(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Respond with 200 but no Content-Length → Go sets ContentLength = -1.
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	size := headBlobSize(context.Background(), srv.Listener.Addr().String(), "/v2/lib/nginx/blobs/sha256:abc")
+	if size != 0 {
+		t.Errorf("headBlobSize = %d, want 0 when no Content-Length", size)
+	}
+}
+
+// TestFetchFromPeers_AllFail exercises the false return path in FetchFromPeers when
+// every peer returns a non-success status (FetchFromPeer returns an error for each).
+func TestFetchFromPeers_AllFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	// Use the server address directly as a peer; StaticRouter marks all peers as healthy
+	// by default (they are in HealthyPeers until a health-check fails them).
+	addr := srv.Listener.Addr().String()
+	pw := routing.NewPeerWatcher([]string{addr})
+	sr := routing.NewStaticRouter(pw)
+
+	_, _, ok := FetchFromPeers(context.Background(), sr, http.MethodGet, "/v2/path", nil, "")
+	if ok {
+		t.Error("expected FetchFromPeers to return false when all peers fail")
 	}
 }
 
