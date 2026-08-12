@@ -407,3 +407,171 @@ func TestRequestRouter_V2NormPath(t *testing.T) {
 		t.Fatal("expected /v2 to be handled locally")
 	}
 }
+
+// TestRequestRouter_BlobLocalDirect exercises the "tracker miss → direct HEAD succeeds" branch of
+// RequestRouter.  The blob digest is NOT in the tracker but the local registry responds 200 to
+// HEAD, so the router proxies the GET directly to local.
+func TestRequestRouter_BlobLocalDirect(t *testing.T) {
+	tracker := setupRouterTest(t) // tracker knows sha256:aaaa…
+
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte("direct local blob"))
+		}
+	}))
+	defer local.Close()
+
+	interceptor := RequestRouter(tracker, local.Listener.Addr().String())
+
+	// sha256:bbbb… is NOT in the tracker — forces the direct-check path.
+	req := httptest.NewRequest(http.MethodGet,
+		"http://registry.example.com/v2/library/nginx/blobs/sha256:bbbb000000000000000000000000000000000000000000000000000000000000",
+		nil)
+	rec := httptest.NewRecorder()
+
+	handled := interceptor(rec, req)
+	if !handled {
+		t.Fatal("expected local direct blob request to be handled")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// TestRequestRouter_ManifestLocal exercises the "tryManifestFrom local succeeds" branch of
+// RequestRouter — the local registry returns 200 for the manifest GET, so the router
+// writes the response and returns true without touching upstream.
+func TestRequestRouter_ManifestLocal(t *testing.T) {
+	tracker := setupRouterTest(t)
+
+	manifest := []byte(`{"schemaVersion":2}`)
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(manifest)
+	}))
+	defer local.Close()
+
+	interceptor := RequestRouter(tracker, local.Listener.Addr().String())
+
+	req := httptest.NewRequest(http.MethodGet,
+		"http://registry.example.com/v2/library/nginx/manifests/latest",
+		nil)
+	rec := httptest.NewRecorder()
+
+	handled := interceptor(rec, req)
+	if !handled {
+		t.Fatal("expected local manifest request to be handled")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// TestRequestRouter_BlobP2P exercises the "tracker miss → local miss → P2P peer hit" branch of
+// RequestRouter.  The local registry returns 404 for the HEAD check, but a P2P peer returns 200,
+// so the router proxies the GET to the peer.
+func TestRequestRouter_BlobP2P(t *testing.T) {
+	tracker := setupRouterTest(t) // tracker knows sha256:aaaa…
+
+	// Peer server: 200 for HEAD and GET on blob paths; 200 for health-check.
+	peerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte("p2p blob"))
+		}
+	}))
+	defer peerSrv.Close()
+	peerAddr := peerSrv.Listener.Addr().String()
+
+	// Local server returns 404 so tryBlobFromLocal(localAddr) is false.
+	localSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer localSrv.Close()
+
+	// Build StaticRouter with the peer and run one health check so the peer is marked healthy.
+	pw := routing.NewPeerWatcher([]string{peerAddr})
+	sr := routing.NewStaticRouter(pw)
+	hctx, hcancel := context.WithCancel(context.Background())
+	go func() { _ = sr.RunHealthCheck(hctx, time.Hour) }()
+	time.Sleep(150 * time.Millisecond)
+	hcancel()
+
+	interceptor := RequestRouter(tracker, localSrv.Listener.Addr().String(), sr)
+
+	// sha256:bbbb… is NOT in the tracker; local returns 404 → falls through to P2P.
+	req := httptest.NewRequest(http.MethodGet,
+		"http://registry.example.com/v2/library/nginx/blobs/sha256:bbbb000000000000000000000000000000000000000000000000000000000000",
+		nil)
+	rec := httptest.NewRecorder()
+
+	handled := interceptor(rec, req)
+	if !handled {
+		t.Fatal("expected P2P blob request to be handled")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// TestRequestRouter_ManifestP2P exercises the "local manifest miss → P2P peer hit" branch of
+// RequestRouter.  The local registry returns 404 for the manifest GET, but a P2P peer returns 200.
+func TestRequestRouter_ManifestP2P(t *testing.T) {
+	tracker := setupRouterTest(t)
+
+	manifest := []byte(`{"schemaVersion":2}`)
+	peerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			// health check
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(manifest)
+	}))
+	defer peerSrv.Close()
+	peerAddr := peerSrv.Listener.Addr().String()
+
+	localSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer localSrv.Close()
+
+	pw := routing.NewPeerWatcher([]string{peerAddr})
+	sr := routing.NewStaticRouter(pw)
+	hctx, hcancel := context.WithCancel(context.Background())
+	go func() { _ = sr.RunHealthCheck(hctx, time.Hour) }()
+	time.Sleep(150 * time.Millisecond)
+	hcancel()
+
+	interceptor := RequestRouter(tracker, localSrv.Listener.Addr().String(), sr)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"http://registry.example.com/v2/library/nginx/manifests/latest",
+		nil)
+	rec := httptest.NewRecorder()
+
+	handled := interceptor(rec, req)
+	if !handled {
+		t.Fatal("expected P2P manifest request to be handled")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// TestPeerClient_Schemes covers both branches of peerClient — the HTTPS branch returns a
+// dedicated client with InsecureSkipVerify, the HTTP branch returns http.DefaultClient.
+func TestPeerClient_Schemes(t *testing.T) {
+	httpsClient := peerClient("https")
+	if httpsClient == http.DefaultClient {
+		t.Error("peerClient(https): expected a dedicated client, got DefaultClient")
+	}
+	httpClient := peerClient("http")
+	if httpClient != http.DefaultClient {
+		t.Error("peerClient(http): expected DefaultClient")
+	}
+}

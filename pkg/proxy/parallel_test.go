@@ -157,6 +157,18 @@ func TestParallelFetcher_CalculateChunks(t *testing.T) {
 	}
 }
 
+// TestNewParallelFetcher_Defaults verifies that zero values for chunkSize and parallelism
+// are replaced with DefaultChunkSize and DefaultParallelism respectively.
+func TestNewParallelFetcher_Defaults(t *testing.T) {
+	pf := NewParallelFetcher(0, 0)
+	if pf.chunkSize != DefaultChunkSize {
+		t.Errorf("chunkSize = %d, want %d (DefaultChunkSize)", pf.chunkSize, DefaultChunkSize)
+	}
+	if pf.parallelism != DefaultParallelism {
+		t.Errorf("parallelism = %d, want %d (DefaultParallelism)", pf.parallelism, DefaultParallelism)
+	}
+}
+
 func TestParallelFetcher_StreamFetch(t *testing.T) {
 	data := []byte("stream test blob")
 	srv := createTestBlobServer(t, data)
