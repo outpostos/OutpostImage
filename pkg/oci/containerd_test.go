@@ -317,3 +317,241 @@ func TestDetectMediaType(t *testing.T) {
 		})
 	}
 }
+
+// TestContainerdStore_Init_ScanContentStoreError exercises the Init error path when
+// scanContentStore fails. Creating the sha256 blob dir as a file makes os.ReadDir return
+// ENOTDIR (not IsNotExist), so scanContentStore propagates the error to Init.
+func TestContainerdStore_Init_ScanContentStoreError(t *testing.T) {
+	root := t.TempDir()
+	blobDirParent := filepath.Join(root, "io.containerd.content.v1.content", "blobs")
+	if err := os.MkdirAll(blobDirParent, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// sha256 is a file, not a directory → os.ReadDir returns "not a directory"
+	if err := os.WriteFile(filepath.Join(blobDirParent, "sha256"), []byte("not-a-dir"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewContainerdStore(root)
+	if err := store.Init(context.Background()); err == nil {
+		t.Fatal("expected error when blob sha256 dir is a regular file")
+	}
+}
+
+// TestContainerdStore_BuildImageIndex_WithTags exercises the inner loop body of
+// buildImageIndex by pre-populating cs.tags and cs.blobs before calling it.
+func TestContainerdStore_BuildImageIndex_WithTags(t *testing.T) {
+	store, _ := setupContainerdTestStore(t)
+	ctx := context.Background()
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pick a blob from the initialized store.
+	store.mu.RLock()
+	var blobDgst digest.Digest
+	var blobPath string
+	for d, p := range store.blobs {
+		blobDgst = d
+		blobPath = p
+		break
+	}
+	store.mu.RUnlock()
+
+	if blobDgst == "" {
+		t.Skip("no blobs found in test store")
+	}
+
+	// Directly set a tag and a blob so buildImageIndex processes both inner branches.
+	store.mu.Lock()
+	store.tags["myimage:v1"] = blobDgst
+	store.blobs[blobDgst] = blobPath
+	store.mu.Unlock()
+
+	if err := store.buildImageIndex(); err != nil {
+		t.Fatalf("buildImageIndex: %v", err)
+	}
+
+	images, _ := store.ListImages(ctx)
+	var found bool
+	for _, img := range images {
+		if img.Digest == blobDgst {
+			found = true
+			if img.Size <= 0 {
+				t.Errorf("expected positive size for image, got %d", img.Size)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected image with digest %s in results", blobDgst)
+	}
+}
+
+// TestContainerdTagCandidates_InvalidRef verifies the error path when the reference
+// has no colon (invalid).
+func TestContainerdTagCandidates_InvalidRef(t *testing.T) {
+	_, err := containerdTagCandidates("no-colon-here")
+	if err == nil {
+		t.Fatal("expected error for reference with no colon")
+	}
+}
+
+// TestContainerdTagCandidates_DockerIOLibrary verifies the docker.io/library/ prefix
+// strip path in containerdTagCandidates.
+func TestContainerdTagCandidates_DockerIOLibrary(t *testing.T) {
+	candidates, err := containerdTagCandidates("docker.io/library/nginx:latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Should include "docker.io/library/nginx:latest", "library/nginx:latest", "nginx:latest"
+	found := false
+	for _, c := range candidates {
+		if c == "nginx:latest" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'nginx:latest' in candidates, got %v", candidates)
+	}
+}
+
+// TestHasRegistryHost_Localhost verifies that "localhost" in the first component of
+// a name is treated as a registry host.
+func TestHasRegistryHost_Localhost(t *testing.T) {
+	if !hasRegistryHost("localhost/myimage") {
+		t.Error("localhost/myimage should be treated as having a registry host")
+	}
+	if hasRegistryHost("myimage") {
+		t.Error("bare name should not be treated as having a registry host")
+	}
+}
+
+// TestContainerdStore_GetManifest_ReadError exercises the os.ReadFile error path in
+// GetManifest by injecting a path into cs.blobs that points to a non-existent file.
+func TestContainerdStore_GetManifest_ReadError(t *testing.T) {
+	store, _ := setupContainerdTestStore(t)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inject a blob path that doesn't exist on disk.
+	ghost := digest.FromString("nonexistent-blob")
+	store.mu.Lock()
+	store.blobs[ghost] = "/nonexistent/path/to/blob"
+	store.mu.Unlock()
+
+	_, _, err := store.GetManifest(context.Background(), ghost)
+	if err == nil {
+		t.Fatal("expected error when manifest file does not exist")
+	}
+}
+
+// TestContainerdStore_Resolve_InvalidRef exercises the error path in Resolve when the
+// reference has no colon (containerdTagCandidates returns an error).
+func TestContainerdStore_Resolve_InvalidRef(t *testing.T) {
+	store, _ := setupContainerdTestStore(t)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := store.Resolve(context.Background(), "no-colon-here")
+	if err == nil {
+		t.Fatal("expected error for reference with no colon")
+	}
+}
+
+// TestContainerdStore_ScanContentStore_FileAsDir exercises the non-IsNotExist error
+// path in scanContentStore by making the sha256 blob directory path a regular file.
+func TestContainerdStore_ScanContentStore_FileAsDir(t *testing.T) {
+	root := t.TempDir()
+	blobDirParent := filepath.Join(root, "io.containerd.content.v1.content", "blobs")
+	if err := os.MkdirAll(blobDirParent, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blobDirParent, "sha256"), []byte("not-a-dir"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewContainerdStore(root)
+	err := store.scanContentStore()
+	if err == nil {
+		t.Fatal("expected error when sha256 path is a regular file")
+	}
+}
+
+// TestContainerdStore_GetBlob_OpenError exercises the os.Open error path in GetBlob
+// by injecting a non-existent path into cs.blobs.
+func TestContainerdStore_GetBlob_OpenError(t *testing.T) {
+	store, _ := setupContainerdTestStore(t)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inject a blob entry pointing to a file that does not exist.
+	ghost := digest.FromString("ghost-blob-open-error")
+	store.mu.Lock()
+	store.blobs[ghost] = "/nonexistent/path/to/blob-file"
+	store.mu.Unlock()
+
+	_, _, err := store.GetBlob(context.Background(), ghost)
+	if err == nil {
+		t.Fatal("expected error when blob file does not exist")
+	}
+}
+
+// TestContainerdTagCandidates_LibraryPrefix exercises the "library/" prefix strip path
+// in containerdTagCandidates when the reference has no registry host but starts with
+// "library/" (e.g. "library/nginx:latest").
+func TestContainerdTagCandidates_LibraryPrefix(t *testing.T) {
+	candidates, err := containerdTagCandidates("library/nginx:latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Should include "library/nginx:latest", "docker.io/library/nginx:latest", "nginx:latest"
+	wantSuffix := "nginx:latest"
+	found := false
+	for _, c := range candidates {
+		if c == wantSuffix {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected %q in candidates, got %v", wantSuffix, candidates)
+	}
+}
+
+// TestContainerdStore_Resolve_LibraryPrefix exercises the Resolve path for a reference
+// like "library/nginx:latest" that should map to a stored "docker.io/library/nginx:latest" tag.
+func TestContainerdStore_Resolve_LibraryPrefix(t *testing.T) {
+	store, _ := setupContainerdTestStore(t)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inject a tag under the docker.io/library/ namespace.
+	testDgst := digest.FromString("library-test")
+	store.mu.Lock()
+	store.tags["docker.io/library/busybox:latest"] = testDgst
+	store.mu.Unlock()
+
+	// Resolve via "library/busybox:latest" — should find the docker.io/library/ tag.
+	got, err := store.Resolve(context.Background(), "library/busybox:latest")
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	if got != testDgst {
+		t.Errorf("Resolve() = %s, want %s", got, testDgst)
+	}
+}
+
+// TestDetectMediaType_OctetStream exercises the fallback "application/octet-stream"
+// path when the content is valid JSON but has no recognizable structure.
+func TestDetectMediaType_OctetStream(t *testing.T) {
+	// Valid JSON object with no schemaVersion, mediaType, config, or rootfs fields.
+	data := []byte(`{"foo":"bar","baz":42}`)
+	got := detectMediaType(data)
+	if got != "application/octet-stream" {
+		t.Errorf("detectMediaType() = %q, want %q", got, "application/octet-stream")
+	}
+}
