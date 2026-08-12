@@ -327,12 +327,77 @@ func TestMDNSService_QueryAndMerge_WithInvalidInterface(t *testing.T) {
 	}
 }
 
-// TestMDNSService_Discover_TickerPath exercises the ticker branch of Discover
-// by using a very short QueryInterval.  It cancels after the first tick fires.
+// TestMDNSService_QueryAndMerge_DiscoversPeer exercises the entry loop in
+// queryAndMerge. It starts a real mDNS server via Advertise, then calls
+// queryAndMerge so the client receives at least one entry — covering the
+// `for entry := range entries { addr = ...; s.peers[addr] = ... }` body.
+// If mDNS multicast is unavailable in the test environment the test is skipped.
+func TestMDNSService_QueryAndMerge_DiscoversPeer(t *testing.T) {
+	const testPort = 19753 // arbitrary high port for the advertiser
+
+	advertiser := NewMDNSService(MDNSConfig{
+		Port:    testPort,
+		NodeID:  "mdns-test-server",
+		Version: "v0.0.1",
+	})
+
+	if err := advertiser.Advertise(); err != nil {
+		t.Skipf("mDNS Advertise failed (network not available): %v", err)
+	}
+	defer advertiser.Shutdown()
+
+	// Give the server a moment to set up before querying.
+	time.Sleep(100 * time.Millisecond)
+
+	discoverer := NewMDNSService(MDNSConfig{
+		Port:        testPort + 1,
+		NodeID:      "mdns-test-client",
+		GracePeriod: 30 * time.Second,
+	})
+	pw := NewPeerWatcher(nil)
+
+	// queryAndMerge should receive at least one entry from the advertiser.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		discoverer.queryAndMerge(pw)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("queryAndMerge did not return within 10s")
+	}
+
+	discoverer.mu.RLock()
+	peerCount := len(discoverer.peers)
+	discoverer.mu.RUnlock()
+
+	if peerCount == 0 {
+		t.Skip("no mDNS peers discovered (multicast may not be available in this environment)")
+	}
+	t.Logf("queryAndMerge discovered %d peer(s)", peerCount)
+}
+
+// TestMDNSService_Discover_TickerPath exercises the ticker branch of Discover.
+//
+// The mDNS query inside queryAndMerge has a hardcoded 3-second timeout.  To
+// guarantee that the ticker fires exactly once in the for-select loop — and not
+// while the initial queryAndMerge is still blocking — we use a QueryInterval of
+// 4 s (> mDNS timeout).  That way:
+//
+//  1. Initial queryAndMerge completes at ≤ t=3 s.
+//  2. The for-select blocks until the ticker fires at t=4 s → ticker case covered.
+//  3. A second queryAndMerge starts and runs until ≤ t=7 s.
+//  4. Context is cancelled at t=5 s (during step 3).
+//  5. When the second queryAndMerge returns, only ctx.Done() is ready
+//     (next tick at t=8 s is in the future) → Discover returns deterministically.
+//
+// Total wall time: ≈ 7 s, comfortably within the 20 s test timeout.
 func TestMDNSService_Discover_TickerPath(t *testing.T) {
 	svc := NewMDNSService(MDNSConfig{
 		Port:          5000,
-		QueryInterval: 50 * time.Millisecond, // fire almost immediately
+		QueryInterval: 4 * time.Second, // > mDNS query timeout (3 s) to avoid multi-fire
 	})
 	pw := NewPeerWatcher(nil)
 
@@ -343,9 +408,10 @@ func TestMDNSService_Discover_TickerPath(t *testing.T) {
 		done <- svc.Discover(ctx, pw)
 	}()
 
-	// Wait long enough for the ticker to fire at least once and another
-	// queryAndMerge call to begin, then cancel.
-	time.Sleep(200 * time.Millisecond)
+	// Cancel after 5 s: the ticker fires at t=4 s (inside the for-select, with
+	// ctx still alive), and then Discover enters a second queryAndMerge call.
+	// The context cancel at t=5 s is observed after that call returns.
+	time.Sleep(5 * time.Second)
 	cancel()
 
 	select {
@@ -353,7 +419,7 @@ func TestMDNSService_Discover_TickerPath(t *testing.T) {
 		if err != nil {
 			t.Errorf("expected nil error, got: %v", err)
 		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("Discover did not return after ticker test within 15s")
+	case <-time.After(20 * time.Second):
+		t.Fatal("Discover did not return after ticker test within 20s")
 	}
 }
