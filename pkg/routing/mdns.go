@@ -143,6 +143,7 @@ func (s *MDNSService) queryAndMerge(pw *PeerWatcher) {
 	entries := make(chan *mdns.ServiceEntry, 16)
 
 	go func() {
+		defer close(entries)
 		params := &mdns.QueryParam{
 			Service:             MDNSServiceName,
 			Domain:              s.config.Domain,
