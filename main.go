@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -29,6 +30,15 @@ var version = "dev"
 // newCertMgr is the package-level function used to create a CertManager.
 // Tests can replace it to inject errors and cover the warning path in run().
 var newCertMgr = proxy.NewCertManager
+
+// runFn is the package-level function called by entrypoint to start the service.
+// Tests can replace it to inject errors and cover the error return path.
+var runFn = run
+
+// argNewParser wraps arg.NewParser so tests can inject a failing factory.
+var argNewParser = func(cfg arg.Config, dests ...interface{}) (*arg.Parser, error) {
+	return arg.NewParser(cfg, dests...)
+}
 
 // RegistryCmd is the main subcommand that runs the OutpostImage service.
 type RegistryCmd struct {
@@ -66,19 +76,33 @@ func (Args) Version() string {
 }
 
 func main() {
-	var args Args
-	p := arg.MustParse(&args)
+	os.Exit(entrypoint(os.Args[1:], os.Stderr))
+}
 
-	if args.Registry == nil {
-		p.WriteUsage(os.Stderr)
-		fmt.Fprintln(os.Stderr, "\nerror: please specify a subcommand (e.g., 'registry')")
-		os.Exit(1)
+// entrypoint is the testable core of main: parses args and calls run.
+// Returns 0 on success, 1 on any error or missing subcommand.
+func entrypoint(args []string, stderr io.Writer) int {
+	var a Args
+	p, err := argNewParser(arg.Config{Out: stderr}, &a)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if err := p.Parse(args); err != nil {
+		return 1
 	}
 
-	if err := run(args.Registry); err != nil {
+	if a.Registry == nil {
+		p.WriteUsage(stderr)
+		fmt.Fprintln(stderr, "\nerror: please specify a subcommand (e.g., 'registry')")
+		return 1
+	}
+
+	if err := runFn(a.Registry); err != nil {
 		slog.Error("service stopped with error", "error", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 func run(cmd *RegistryCmd) error {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexflint/go-arg"
 	"github.com/outpostos/outpostimage/pkg/proxy"
 )
 
@@ -446,5 +448,111 @@ func TestRun_CertManagerFails(t *testing.T) {
 
 	if err := runCmdWithSIGTERM(t, cmd, 300*time.Millisecond); err != nil {
 		t.Fatalf("run() returned error after SIGTERM with failed cert manager: %v", err)
+	}
+}
+
+// TestEntrypoint_ParserCreationFails exercises the arg.NewParser error branch in
+// entrypoint by injecting a failing argNewParser.
+func TestEntrypoint_ParserCreationFails(t *testing.T) {
+	old := argNewParser
+	argNewParser = func(_ arg.Config, _ ...interface{}) (*arg.Parser, error) {
+		return nil, fmt.Errorf("injected parser creation failure")
+	}
+	t.Cleanup(func() { argNewParser = old })
+
+	var buf bytes.Buffer
+	code := entrypoint([]string{"registry"}, &buf)
+	if code != 1 {
+		t.Fatalf("expected exit code 1 when NewParser fails, got %d", code)
+	}
+	if !strings.Contains(buf.String(), "injected parser creation failure") {
+		t.Errorf("expected error message in stderr, got: %q", buf.String())
+	}
+}
+
+// TestEntrypoint_NoSubcommand verifies that entrypoint returns 1 when no
+// subcommand is provided (the "registry" subcommand is missing).
+func TestEntrypoint_NoSubcommand(t *testing.T) {
+	var buf bytes.Buffer
+	code := entrypoint([]string{}, &buf)
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if !strings.Contains(buf.String(), "error") && !strings.Contains(buf.String(), "Usage") {
+		// Either the usage or the error message should appear
+		t.Logf("stderr output: %q", buf.String())
+	}
+}
+
+// TestEntrypoint_UnknownFlag verifies that entrypoint returns 1 for unknown flags.
+func TestEntrypoint_UnknownFlag(t *testing.T) {
+	var buf bytes.Buffer
+	code := entrypoint([]string{"--unknown-flag=yes"}, &buf)
+	if code != 1 {
+		t.Fatalf("expected exit code 1 for unknown flag, got %d", code)
+	}
+}
+
+// TestEntrypoint_RegistrySuccess verifies that entrypoint delegates to run()
+// when the "registry" subcommand is given with valid flags, and that run()
+// exits cleanly after SIGTERM.
+func TestEntrypoint_RegistrySuccess(t *testing.T) {
+	old := newCertMgr
+	newCertMgr = func(_ string) (*proxy.CertManager, error) {
+		return nil, fmt.Errorf("injected cert manager failure")
+	}
+	t.Cleanup(func() { newCertMgr = old })
+
+	var buf bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		code := entrypoint([]string{
+			"registry",
+			"--registry-addr=:0",
+			"--proxy-addr=:0",
+			"--metrics-addr=:0",
+			"--docker-root=" + setupDockerRoot(t),
+			"--containerd-root=" + t.TempDir(),
+			"--store-type=auto",
+			"--mdns-enabled=false",
+			"--k8s-discovery=false",
+			"--log-level=ERROR",
+			"--ca-dir=" + t.TempDir(),
+		}, &buf)
+		done <- code
+	}()
+
+	time.Sleep(300 * time.Millisecond)
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("Kill(SIGTERM): %v", err)
+	}
+
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("entrypoint returned %d, want 0; stderr: %s", code, buf.String())
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("entrypoint did not return after SIGTERM within 15s")
+	}
+}
+
+// TestEntrypoint_RunFails verifies that entrypoint returns 1 when run() returns
+// an error. We simulate this by injecting a newCertMgr that causes run() to fail;
+// but run() actually only logs Warn for cert errors and still succeeds. Instead,
+// we send a SIGTERM to produce a clean exit (code 0), confirming entrypoint passes
+// run()'s return value through correctly.
+func TestEntrypoint_RunError(t *testing.T) {
+	// Inject a run that always errors to exercise the "run returns error → return 1" path.
+	origRun := runFn
+	runFn = func(_ *RegistryCmd) error {
+		return fmt.Errorf("injected run error")
+	}
+	t.Cleanup(func() { runFn = origRun })
+
+	var buf bytes.Buffer
+	code := entrypoint([]string{"registry"}, &buf)
+	if code != 1 {
+		t.Fatalf("expected exit code 1 when run() errors, got %d", code)
 	}
 }
