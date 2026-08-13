@@ -1707,3 +1707,26 @@ func TestTarDirectory_SocketFile(t *testing.T) {
 		t.Error("expected error when directory contains a Unix socket")
 	}
 }
+
+// TestTarDirectory_UnreadableFile exercises the os.Open error path in tarDirectory.
+// A regular file with mode 000 passes filepath.Walk's stat and tar.FileInfoHeader,
+// but os.Open fails with EACCES, which is the uncovered branch at the copy step.
+func TestTarDirectory_UnreadableFile(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipped when running as root (root bypasses file permissions)")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret.txt")
+	if err := os.WriteFile(path, []byte("secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(path, 0644) //nolint:errcheck // best-effort restore for TempDir cleanup
+
+	err := tarDirectory(io.Discard, dir)
+	if err == nil {
+		t.Error("expected error when directory contains an unreadable file")
+	}
+}

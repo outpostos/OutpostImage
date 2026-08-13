@@ -1467,3 +1467,31 @@ func TestContainerdStore_Subscribe_FlushCtxDone(t *testing.T) {
 		t.Error("channel not closed after context cancel in flush()")
 	}
 }
+
+// TestContainerdStore_LoadMetadataDB_OpenError covers the os.Open(dbPath) error path
+// in loadMetadataDB. When the DB file exists (so os.Stat passes) but is not readable
+// (mode 000), os.Open returns EACCES and loadMetadataDB returns a wrapped error.
+func TestContainerdStore_LoadMetadataDB_OpenError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipped when running as root (root bypasses file permissions)")
+	}
+	root := t.TempDir()
+	dbDir := filepath.Join(root, "io.containerd.metadata.v1.bolt")
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dbDir, "meta.db")
+	if err := os.WriteFile(dbPath, []byte("dummy bolt db content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dbPath, 0000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dbPath, 0644) //nolint:errcheck // best-effort restore for TempDir cleanup
+
+	store := NewContainerdStore(root)
+	err := store.loadMetadataDB()
+	if err == nil {
+		t.Error("expected error when DB file is not readable")
+	}
+}
