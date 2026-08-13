@@ -243,10 +243,7 @@ func (cs *ContainerdStore) Subscribe(ctx context.Context) (<-chan Event, error) 
 			select {
 			case <-ctx.Done():
 				return
-			case event, ok := <-watcher.Events:
-				if !ok {
-					return
-				}
+			case event := <-watcher.Events:
 				name := filepath.Base(event.Name)
 				if event.Has(fsnotify.Create) {
 					pending[name] = EventCreate
@@ -264,10 +261,7 @@ func (cs *ContainerdStore) Subscribe(ctx context.Context) (<-chan Event, error) 
 			case <-timerC:
 				flush()
 				timerC = nil
-			case err, ok := <-watcher.Errors:
-				if !ok {
-					return
-				}
+			case err := <-watcher.Errors:
 				slog.Error("containerd store watcher error", "error", err)
 			}
 		}

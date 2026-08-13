@@ -475,10 +475,7 @@ func (ds *DockerStore) Subscribe(ctx context.Context) (<-chan Event, error) {
 			select {
 			case <-ctx.Done():
 				return
-			case event, ok := <-watcher.Events:
-				if !ok {
-					return
-				}
+			case event := <-watcher.Events:
 				if event.Has(fsnotify.Create) {
 					name := filepath.Base(event.Name)
 					dgst, err := digest.Parse("sha256:" + name)
@@ -509,10 +506,7 @@ func (ds *DockerStore) Subscribe(ctx context.Context) (<-chan Event, error) {
 						return
 					}
 				}
-			case err, ok := <-watcher.Errors:
-				if !ok {
-					return
-				}
+			case err := <-watcher.Errors:
 				slog.Error("docker store watcher error", "error", err)
 			}
 		}
