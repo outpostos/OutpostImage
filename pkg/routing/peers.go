@@ -90,10 +90,7 @@ func (pw *PeerWatcher) WatchFile(ctx context.Context, path string) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case event, ok := <-watcher.Events:
-			if !ok {
-				return nil
-			}
+		case event := <-watcher.Events:
 			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
 				peers, err := ParsePeersFile(path)
 				if err != nil {
@@ -103,10 +100,7 @@ func (pw *PeerWatcher) WatchFile(ctx context.Context, path string) error {
 				pw.SetPeers(peers)
 				slog.Info("reloaded peers from file", "path", path, "count", len(peers))
 			}
-		case err, ok := <-watcher.Errors:
-			if !ok {
-				return nil
-			}
+		case err := <-watcher.Errors:
 			slog.Error("peers file watcher error", "error", err)
 		}
 	}
