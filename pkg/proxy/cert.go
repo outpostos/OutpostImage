@@ -3,12 +3,13 @@ package proxy
 import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"crypto/rand"
+	cryptorand "crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/big"
 	"os"
@@ -30,6 +31,10 @@ type CertManager struct {
 // ca.crt/ca.key, those are loaded; otherwise a new CA is generated and
 // optionally persisted to caDir.
 func NewCertManager(caDir string) (*CertManager, error) {
+	return newCertManager(caDir, cryptorand.Reader)
+}
+
+func newCertManager(caDir string, rng io.Reader) (*CertManager, error) {
 	cm := &CertManager{
 		cache: make(map[string]*tls.Certificate),
 	}
@@ -42,7 +47,7 @@ func NewCertManager(caDir string) (*CertManager, error) {
 	}
 
 	// Generate new CA
-	if err := cm.generateCA(); err != nil {
+	if err := cm.generateCA(rng); err != nil {
 		return nil, fmt.Errorf("generate CA: %w", err)
 	}
 
@@ -60,6 +65,10 @@ func NewCertManager(caDir string) (*CertManager, error) {
 // GetCertificate returns a TLS certificate for the given hostname.
 // Certificates are cached for reuse.
 func (cm *CertManager) GetCertificate(host string) (*tls.Certificate, error) {
+	return cm.getCertificate(cryptorand.Reader, host)
+}
+
+func (cm *CertManager) getCertificate(rng io.Reader, host string) (*tls.Certificate, error) {
 	cm.mu.RLock()
 	cert, ok := cm.cache[host]
 	cm.mu.RUnlock()
@@ -67,7 +76,7 @@ func (cm *CertManager) GetCertificate(host string) (*tls.Certificate, error) {
 		return cert, nil
 	}
 
-	cert, err := cm.generateCert(host)
+	cert, err := cm.generateCert(rng, host)
 	if err != nil {
 		return nil, err
 	}
@@ -88,8 +97,8 @@ func (cm *CertManager) CACertPEM() []byte {
 	})
 }
 
-func (cm *CertManager) generateCA() error {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+func (cm *CertManager) generateCA(rng io.Reader) error {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rng)
 	if err != nil {
 		return err
 	}
@@ -107,7 +116,7 @@ func (cm *CertManager) generateCA() error {
 		IsCA:                  true,
 	}
 
-	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	certDER, err := x509.CreateCertificate(rng, template, template, &key.PublicKey, key)
 	if err != nil {
 		return err
 	}
@@ -122,13 +131,13 @@ func (cm *CertManager) generateCA() error {
 	return nil
 }
 
-func (cm *CertManager) generateCert(host string) (*tls.Certificate, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+func (cm *CertManager) generateCert(rng io.Reader, host string) (*tls.Certificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rng)
 	if err != nil {
 		return nil, err
 	}
 
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	serial, err := cryptorand.Int(rng, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +156,7 @@ func (cm *CertManager) generateCert(host string) (*tls.Certificate, error) {
 		},
 	}
 
-	certDER, err := x509.CreateCertificate(rand.Reader, template, cm.caCert, &key.PublicKey, cm.caKey)
+	certDER, err := x509.CreateCertificate(rng, template, cm.caCert, &key.PublicKey, cm.caKey)
 	if err != nil {
 		return nil, err
 	}
@@ -204,11 +213,15 @@ func (cm *CertManager) loadCA(dir string) error {
 // insecure registries. Clients with insecure-registry configured already skip
 // TLS verification, so no trusted CA is required.
 func generateSelfSignedCert(host string) (*tls.Certificate, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	return generateSelfSignedCertWithRNG(cryptorand.Reader, host)
+}
+
+func generateSelfSignedCertWithRNG(rng io.Reader, host string) (*tls.Certificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rng)
 	if err != nil {
 		return nil, err
 	}
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	serial, err := cryptorand.Int(rng, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
 		return nil, err
 	}
@@ -221,7 +234,7 @@ func generateSelfSignedCert(host string) (*tls.Certificate, error) {
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
-	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	certDER, err := x509.CreateCertificate(rng, template, template, &key.PublicKey, key)
 	if err != nil {
 		return nil, err
 	}

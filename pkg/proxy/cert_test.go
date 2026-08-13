@@ -1,13 +1,42 @@
 package proxy
 
 import (
+	cryptorand "crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+// errReader is an io.Reader that always returns an error.
+type errReader struct{ err error }
+
+func (e errReader) Read(_ []byte) (int, error) { return 0, e.err }
+
+// countingReader wraps an io.Reader and fails after n bytes.
+type countingReader struct {
+	inner   io.Reader
+	limit   int
+	read    int
+	failErr error
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	if r.read >= r.limit {
+		return 0, r.failErr
+	}
+	avail := r.limit - r.read
+	if len(p) > avail {
+		p = p[:avail]
+	}
+	n, err := r.inner.Read(p)
+	r.read += n
+	return n, err
+}
 
 func TestCertManager_Generate(t *testing.T) {
 	cm, err := NewCertManager("")
@@ -192,7 +221,7 @@ func TestSaveCA_CertWriteError(t *testing.T) {
 	}
 
 	cm := &CertManager{cache: make(map[string]*tls.Certificate)}
-	if err := cm.generateCA(); err != nil {
+	if err := cm.generateCA(cryptorand.Reader); err != nil {
 		t.Fatalf("generateCA: %v", err)
 	}
 
@@ -213,7 +242,7 @@ func TestSaveCA_KeyWriteError(t *testing.T) {
 	}
 
 	cm := &CertManager{cache: make(map[string]*tls.Certificate)}
-	if err := cm.generateCA(); err != nil {
+	if err := cm.generateCA(cryptorand.Reader); err != nil {
 		t.Fatalf("generateCA: %v", err)
 	}
 
@@ -229,7 +258,7 @@ func TestLoadCA_MissingKeyFile(t *testing.T) {
 
 	// Write only ca.crt (no ca.key).
 	cm := &CertManager{cache: make(map[string]*tls.Certificate)}
-	if err := cm.generateCA(); err != nil {
+	if err := cm.generateCA(cryptorand.Reader); err != nil {
 		t.Fatalf("generateCA: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), cm.CACertPEM(), 0644); err != nil {
@@ -270,7 +299,7 @@ func TestLoadCA_InvalidKeyDER(t *testing.T) {
 
 	// Write a valid ca.crt.
 	cm := &CertManager{cache: make(map[string]*tls.Certificate)}
-	if err := cm.generateCA(); err != nil {
+	if err := cm.generateCA(cryptorand.Reader); err != nil {
 		t.Fatalf("generateCA: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), cm.CACertPEM(), 0644); err != nil {
@@ -300,7 +329,7 @@ func TestSaveCA_MkdirError(t *testing.T) {
 	}
 
 	cm := &CertManager{cache: make(map[string]*tls.Certificate)}
-	if err := cm.generateCA(); err != nil {
+	if err := cm.generateCA(cryptorand.Reader); err != nil {
 		t.Fatalf("generateCA: %v", err)
 	}
 
@@ -326,5 +355,124 @@ func TestNewCertManager_WithDir_Warn(t *testing.T) {
 	}
 	if cm == nil {
 		t.Fatal("expected non-nil CertManager")
+	}
+}
+
+// TestGenerateCA_KeygenError exercises the ecdsa.GenerateKey error path in
+// generateCA by passing a reader that immediately returns an error.
+func TestGenerateCA_KeygenError(t *testing.T) {
+	rng := errReader{err: errors.New("simulated rng failure")}
+	_, err := newCertManager("", rng)
+	if err == nil {
+		t.Fatal("expected error when key generation fails")
+	}
+}
+
+// TestGenerateCA_CreateCertificateError exercises the x509.CreateCertificate error
+// path in generateCA. A P-256 private key requires ~32 bytes from the RNG; the
+// subsequent ECDSA signing inside CreateCertificate needs additional bytes.
+// Allowing exactly 32 bytes lets ecdsa.GenerateKey succeed but starves
+// CreateCertificate, returning an error.
+func TestGenerateCA_CreateCertificateError(t *testing.T) {
+	rng := &countingReader{
+		inner:   cryptorand.Reader,
+		limit:   32,
+		failErr: errors.New("rng exhausted after key"),
+	}
+	_, err := newCertManager("", rng)
+	if err == nil {
+		t.Fatal("expected error when CreateCertificate fails due to exhausted RNG")
+	}
+}
+
+// TestGenerateSelfSignedCert_KeygenError exercises the ecdsa.GenerateKey error
+// path in generateSelfSignedCertWithRNG.
+func TestGenerateSelfSignedCert_KeygenError(t *testing.T) {
+	rng := errReader{err: errors.New("simulated rng failure")}
+	_, err := generateSelfSignedCertWithRNG(rng, "example.com")
+	if err == nil {
+		t.Fatal("expected error when key generation fails")
+	}
+}
+
+// TestGenerateSelfSignedCert_SerialError exercises the rand.Int (serial number)
+// error path. After a P-256 key is generated (~32 bytes), the next read for the
+// serial number fails immediately.
+func TestGenerateSelfSignedCert_SerialError(t *testing.T) {
+	rng := &countingReader{
+		inner:   cryptorand.Reader,
+		limit:   32,
+		failErr: errors.New("rng exhausted after key"),
+	}
+	_, err := generateSelfSignedCertWithRNG(rng, "example.com")
+	if err == nil {
+		t.Fatal("expected error when serial number generation fails")
+	}
+}
+
+// TestGetCertificate_GenerateError exercises the generateCert error path in
+// getCertificate when the RNG fails immediately (ecdsa.GenerateKey fails).
+func TestGetCertificate_GenerateError(t *testing.T) {
+	cm, err := NewCertManager("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rng := errReader{err: errors.New("simulated rng failure")}
+	_, err = cm.getCertificate(rng, "example.com")
+	if err == nil {
+		t.Fatal("expected error when certificate generation fails")
+	}
+}
+
+// TestGetCertificate_SerialError exercises the rand.Int (serial) error path in
+// generateCert via getCertificate. Allowing exactly 32 bytes lets the P-256 key
+// generation succeed; the subsequent serial number read then fails.
+func TestGetCertificate_SerialError(t *testing.T) {
+	cm, err := NewCertManager("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rng := &countingReader{
+		inner:   cryptorand.Reader,
+		limit:   32,
+		failErr: errors.New("rng exhausted after key"),
+	}
+	_, err = cm.getCertificate(rng, "example.com")
+	if err == nil {
+		t.Fatal("expected error when serial number generation fails in generateCert")
+	}
+}
+
+// TestGetCertificate_CreateCertError exercises the x509.CreateCertificate error path
+// in generateCert via getCertificate. Allowing 32 (key) + 16 (serial) = 48 bytes lets
+// key generation and serial succeed; x509.CreateCertificate then fails during signing.
+func TestGetCertificate_CreateCertError(t *testing.T) {
+	cm, err := NewCertManager("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rng := &countingReader{
+		inner:   cryptorand.Reader,
+		limit:   48,
+		failErr: errors.New("rng exhausted after serial"),
+	}
+	_, err = cm.getCertificate(rng, "example.com")
+	if err == nil {
+		t.Fatal("expected error when CreateCertificate fails in generateCert")
+	}
+}
+
+// TestGenerateSelfSignedCert_CreateCertError exercises the x509.CreateCertificate
+// error path in generateSelfSignedCertWithRNG. Allowing 32+16=48 bytes lets key
+// generation and serial succeed; signing then fails on the next read.
+func TestGenerateSelfSignedCert_CreateCertError(t *testing.T) {
+	rng := &countingReader{
+		inner:   cryptorand.Reader,
+		limit:   48,
+		failErr: errors.New("rng exhausted after serial"),
+	}
+	_, err := generateSelfSignedCertWithRNG(rng, "example.com")
+	if err == nil {
+		t.Fatal("expected error when CreateCertificate fails in generateSelfSignedCert")
 	}
 }
