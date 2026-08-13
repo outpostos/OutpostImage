@@ -92,10 +92,7 @@ func (pf *ParallelFetcher) Fetch(ctx context.Context, balancer *routing.Balancer
 			// Try peers in round-robin order
 			var lastErr error
 			for attempt := 0; attempt < len(peers); attempt++ {
-				peer, ok := balancer.Next()
-				if !ok {
-					break
-				}
+				peer, _ := balancer.Next()
 
 				data, err := pf.fetchChunk(ctx, peer, blobPath, ch.start, ch.end)
 				if err != nil {
