@@ -396,12 +396,12 @@ func TestGenerateSelfSignedCert_KeygenError(t *testing.T) {
 }
 
 // TestGenerateSelfSignedCert_SerialError exercises the rand.Int (serial number)
-// error path. After a P-256 key is generated (~32 bytes), the next read for the
-// serial number fails immediately.
+// error path. P-256 key generation consumes 32–33 bytes; allowing exactly 33
+// guarantees the key succeeds but the serial read fails.
 func TestGenerateSelfSignedCert_SerialError(t *testing.T) {
 	rng := &countingReader{
 		inner:   cryptorand.Reader,
-		limit:   32,
+		limit:   33,
 		failErr: errors.New("rng exhausted after key"),
 	}
 	_, err := generateSelfSignedCertWithRNG(rng, "example.com")
@@ -425,8 +425,8 @@ func TestGetCertificate_GenerateError(t *testing.T) {
 }
 
 // TestGetCertificate_SerialError exercises the rand.Int (serial) error path in
-// generateCert via getCertificate. Allowing exactly 32 bytes lets the P-256 key
-// generation succeed; the subsequent serial number read then fails.
+// generateCert via getCertificate. P-256 key generation consumes 32–33 bytes;
+// allowing exactly 33 guarantees the key succeeds but the serial read fails.
 func TestGetCertificate_SerialError(t *testing.T) {
 	cm, err := NewCertManager("")
 	if err != nil {
@@ -434,7 +434,7 @@ func TestGetCertificate_SerialError(t *testing.T) {
 	}
 	rng := &countingReader{
 		inner:   cryptorand.Reader,
-		limit:   32,
+		limit:   33,
 		failErr: errors.New("rng exhausted after key"),
 	}
 	_, err = cm.getCertificate(rng, "example.com")
@@ -444,8 +444,9 @@ func TestGetCertificate_SerialError(t *testing.T) {
 }
 
 // TestGetCertificate_CreateCertError exercises the x509.CreateCertificate error path
-// in generateCert via getCertificate. Allowing 32 (key) + 16 (serial) = 48 bytes lets
-// key generation and serial succeed; x509.CreateCertificate then fails during signing.
+// in generateCert via getCertificate. Allowing 33 (max P-256 key) + 16 (serial) = 49
+// bytes guarantees key generation and serial both succeed; CreateCertificate then
+// fails during ECDSA signing (needs 32–34 more bytes).
 func TestGetCertificate_CreateCertError(t *testing.T) {
 	cm, err := NewCertManager("")
 	if err != nil {
@@ -453,7 +454,7 @@ func TestGetCertificate_CreateCertError(t *testing.T) {
 	}
 	rng := &countingReader{
 		inner:   cryptorand.Reader,
-		limit:   48,
+		limit:   49,
 		failErr: errors.New("rng exhausted after serial"),
 	}
 	_, err = cm.getCertificate(rng, "example.com")
@@ -463,12 +464,12 @@ func TestGetCertificate_CreateCertError(t *testing.T) {
 }
 
 // TestGenerateSelfSignedCert_CreateCertError exercises the x509.CreateCertificate
-// error path in generateSelfSignedCertWithRNG. Allowing 32+16=48 bytes lets key
-// generation and serial succeed; signing then fails on the next read.
+// error path in generateSelfSignedCertWithRNG. Allowing 33 (max P-256 key) + 16
+// (serial) = 49 bytes guarantees both succeed; signing then fails on the next read.
 func TestGenerateSelfSignedCert_CreateCertError(t *testing.T) {
 	rng := &countingReader{
 		inner:   cryptorand.Reader,
-		limit:   48,
+		limit:   49,
 		failErr: errors.New("rng exhausted after serial"),
 	}
 	_, err := generateSelfSignedCertWithRNG(rng, "example.com")
