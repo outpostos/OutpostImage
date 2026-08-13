@@ -10,6 +10,11 @@ import (
 	"strings"
 )
 
+// certGetter is implemented by CertManager; extracted so tests can inject failures.
+type certGetter interface {
+	GetCertificate(host string) (*tls.Certificate, error)
+}
+
 // Proxy is an HTTP/HTTPS proxy server that can intercept OCI registry requests.
 // When a CertManager is provided, HTTPS CONNECT requests are MITM'd to enable
 // interception of OCI registry traffic over TLS.
@@ -17,7 +22,7 @@ import (
 // and upstream TLS verification is skipped — no CA distribution required.
 type Proxy struct {
 	interceptor        func(w http.ResponseWriter, r *http.Request) bool
-	certMgr            *CertManager
+	certMgr            certGetter
 	insecureRegistries []string
 }
 

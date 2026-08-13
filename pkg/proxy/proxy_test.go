@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -899,6 +900,37 @@ func TestProxy_Connect_FlushError(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Error("handleConnect did not return after Flush error")
+	}
+}
+
+// failCertGetter implements certGetter and always returns an error from GetCertificate.
+type failCertGetter struct{ err error }
+
+func (f failCertGetter) GetCertificate(_ string) (*tls.Certificate, error) {
+	return nil, f.err
+}
+
+// TestHandleMITM_CertGenError exercises the `if err != nil { slog.Error ...; return }` path
+// in handleMITM. By injecting a certGetter that always fails, GetCertificate returns an
+// error and handleMITM exits without performing the TLS handshake.
+func TestHandleMITM_CertGenError(t *testing.T) {
+	p := &Proxy{certMgr: failCertGetter{err: errors.New("cert generation failed")}}
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.handleMITM(serverConn, nil, "example.com", "example.com:443", false)
+	}()
+
+	select {
+	case <-done:
+		// handleMITM returned immediately on cert generation error — expected
+	case <-time.After(2 * time.Second):
+		t.Error("handleMITM did not return after cert generation error")
 	}
 }
 
