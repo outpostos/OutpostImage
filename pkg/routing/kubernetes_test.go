@@ -13,7 +13,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 	ktesting "k8s.io/client-go/testing"
 )
 
@@ -895,5 +897,45 @@ func TestKubernetesDiscovery_RetryDelay(t *testing.T) {
 	err := kd.discover(ctx, pw, 1*time.Millisecond)
 	if err != nil {
 		t.Fatalf("discover() returned error after context cancel: %v", err)
+	}
+}
+
+// TestNewKubernetesDiscovery_ClientsetError covers the "create clientset" error
+// path (line 60) in NewKubernetesDiscovery by injecting a failing kubernetesNewForConfig.
+// It reuses the SA-file setup pattern from TestNewKubernetesDiscovery_InClusterSuccess.
+func TestNewKubernetesDiscovery_ClientsetError(t *testing.T) {
+	const saDir = "/var/run/secrets/kubernetes.io/serviceaccount"
+
+	if _, err := os.Stat(saDir); err == nil {
+		t.Skip("SA dir already exists — running inside a Kubernetes cluster")
+	}
+
+	if err := os.MkdirAll(saDir, 0755); err != nil {
+		t.Skipf("cannot create SA dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll("/var/run/secrets") })
+
+	if err := os.WriteFile(saDir+"/namespace", []byte("test-ns"), 0644); err != nil {
+		t.Skipf("cannot write namespace file: %v", err)
+	}
+	if err := os.WriteFile(saDir+"/token", []byte("fake-token"), 0644); err != nil {
+		t.Skipf("cannot write token file: %v", err)
+	}
+
+	t.Setenv("KUBERNETES_SERVICE_HOST", "192.0.2.1")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "6443")
+
+	orig := kubernetesNewForConfig
+	defer func() { kubernetesNewForConfig = orig }()
+	kubernetesNewForConfig = func(_ *rest.Config) (kubernetes.Interface, error) {
+		return nil, fmt.Errorf("injected clientset error")
+	}
+
+	_, err := NewKubernetesDiscovery(KubernetesConfig{ServiceName: "outpostimage"})
+	if err == nil {
+		t.Fatal("expected error when NewForConfig fails")
+	}
+	if !strings.Contains(err.Error(), "create clientset") {
+		t.Errorf("expected 'create clientset' in error, got: %v", err)
 	}
 }

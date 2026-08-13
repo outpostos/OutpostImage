@@ -34,6 +34,10 @@ type KubernetesDiscovery struct {
 	selfIP string
 }
 
+var kubernetesNewForConfig = func(c *rest.Config) (kubernetes.Interface, error) {
+	return kubernetes.NewForConfig(c)
+}
+
 // NewKubernetesDiscovery creates a KubernetesDiscovery using in-cluster config.
 func NewKubernetesDiscovery(cfg KubernetesConfig) (*KubernetesDiscovery, error) {
 	if cfg.Namespace == "" {
@@ -55,7 +59,7 @@ func NewKubernetesDiscovery(cfg KubernetesConfig) (*KubernetesDiscovery, error) 
 		return nil, fmt.Errorf("in-cluster config: %w", err)
 	}
 
-	clientset, err := kubernetes.NewForConfig(restCfg)
+	clientset, err := kubernetesNewForConfig(restCfg)
 	if err != nil {
 		return nil, fmt.Errorf("create clientset: %w", err)
 	}

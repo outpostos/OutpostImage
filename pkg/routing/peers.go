@@ -82,8 +82,10 @@ func (fw *fsnotifyWatcher) Close() error                { return fw.w.Close() }
 func (fw *fsnotifyWatcher) Events() <-chan fsnotify.Event { return fw.w.Events }
 func (fw *fsnotifyWatcher) Errors() <-chan error          { return fw.w.Errors }
 
+var fsnotifyNewWatcher = fsnotify.NewWatcher
+
 func newFsnotifyWatcher() (fileWatcher, error) {
-	w, err := fsnotify.NewWatcher()
+	w, err := fsnotifyNewWatcher()
 	if err != nil {
 		return nil, err
 	}

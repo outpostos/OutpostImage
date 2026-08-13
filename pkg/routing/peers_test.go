@@ -3,6 +3,7 @@ package routing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -353,5 +354,20 @@ func TestPeerWatcher_WatchFile_WatcherError(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("WatchFile did not return after context cancel")
+	}
+}
+
+// TestNewFsnotifyWatcher_Error covers the error path in newFsnotifyWatcher by
+// injecting a failing fsnotify.NewWatcher replacement.
+func TestNewFsnotifyWatcher_Error(t *testing.T) {
+	orig := fsnotifyNewWatcher
+	defer func() { fsnotifyNewWatcher = orig }()
+	fsnotifyNewWatcher = func() (*fsnotify.Watcher, error) {
+		return nil, fmt.Errorf("injected fsnotify error")
+	}
+
+	_, err := newFsnotifyWatcher()
+	if err == nil {
+		t.Error("expected error from newFsnotifyWatcher, got nil")
 	}
 }
