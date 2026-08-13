@@ -3,6 +3,7 @@ package routing
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -824,4 +825,42 @@ func TestKubernetesDiscovery_WatchEndpoints_ResyncError(t *testing.T) {
 	}
 
 	cancel()
+}
+
+// TestDetectSelfIP_InterfaceAddrsError covers the net.InterfaceAddrs error path in
+// detectSelfIP by injecting a stub that returns an error.
+func TestDetectSelfIP_InterfaceAddrsError(t *testing.T) {
+	os.Unsetenv("POD_IP")
+	os.Unsetenv("HOST_IP")
+
+	orig := interfaceAddrs
+	defer func() { interfaceAddrs = orig }()
+	interfaceAddrs = func() ([]net.Addr, error) {
+		return nil, fmt.Errorf("injected error")
+	}
+
+	ip := detectSelfIP()
+	if ip != "" {
+		t.Errorf("expected empty string on InterfaceAddrs error, got %q", ip)
+	}
+}
+
+// TestDetectSelfIP_NoIPv4Interface covers the final return "" in detectSelfIP when
+// InterfaceAddrs succeeds but no non-loopback IPv4 address exists.
+func TestDetectSelfIP_NoIPv4Interface(t *testing.T) {
+	os.Unsetenv("POD_IP")
+	os.Unsetenv("HOST_IP")
+
+	orig := interfaceAddrs
+	defer func() { interfaceAddrs = orig }()
+	// Only loopback — no non-loopback IPv4 to return.
+	interfaceAddrs = func() ([]net.Addr, error) {
+		_, loopback, _ := net.ParseCIDR("127.0.0.1/8")
+		return []net.Addr{loopback}, nil
+	}
+
+	ip := detectSelfIP()
+	if ip != "" {
+		t.Errorf("expected empty string when only loopback present, got %q", ip)
+	}
 }

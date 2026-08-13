@@ -175,6 +175,9 @@ func (kd *KubernetesDiscovery) extractPeers(ep *corev1.Endpoints) []string {
 	return peers
 }
 
+// interfaceAddrs is a package-level variable so tests can inject a stub.
+var interfaceAddrs = net.InterfaceAddrs
+
 // detectSelfIP returns the first non-loopback IPv4 address of this node.
 func detectSelfIP() string {
 	// Try POD_IP env first (set by Kubernetes downward API)
@@ -185,7 +188,7 @@ func detectSelfIP() string {
 	if ip := os.Getenv("HOST_IP"); ip != "" {
 		return ip
 	}
-	addrs, err := net.InterfaceAddrs()
+	addrs, err := interfaceAddrs()
 	if err != nil {
 		return ""
 	}

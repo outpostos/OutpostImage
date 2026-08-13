@@ -13,6 +13,9 @@ Thumbs.db
 
 # Test
 coverage.out
+coverage.html
+cov_*.out
+*.out
 
 # wrangler files
 .wrangler
