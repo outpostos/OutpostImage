@@ -18,6 +18,13 @@ import (
 	"time"
 )
 
+// These vars wrap stdlib functions to allow error-path injection in tests.
+var (
+	x509ParseCertificate    = x509.ParseCertificate
+	x509MarshalECPrivateKey = x509.MarshalECPrivateKey
+	tlsX509KeyPair          = tls.X509KeyPair
+)
+
 // CertManager generates and caches TLS certificates for MITM proxy.
 type CertManager struct {
 	caCert *x509.Certificate
@@ -121,7 +128,7 @@ func (cm *CertManager) generateCA(rng io.Reader) error {
 		return err
 	}
 
-	cert, err := x509.ParseCertificate(certDER)
+	cert, err := x509ParseCertificate(certDER)
 	if err != nil {
 		return err
 	}
@@ -162,13 +169,13 @@ func (cm *CertManager) generateCert(rng io.Reader, host string) (*tls.Certificat
 	}
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	keyDER, err := x509.MarshalECPrivateKey(key)
+	keyDER, err := x509MarshalECPrivateKey(key)
 	if err != nil {
 		return nil, err
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 
-	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
+	tlsCert, err := tlsX509KeyPair(certPEM, keyPEM)
 	if err != nil {
 		return nil, err
 	}
@@ -239,12 +246,12 @@ func generateSelfSignedCertWithRNG(rng io.Reader, host string) (*tls.Certificate
 		return nil, err
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	keyDER, err := x509.MarshalECPrivateKey(key)
+	keyDER, err := x509MarshalECPrivateKey(key)
 	if err != nil {
 		return nil, err
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
+	tlsCert, err := tlsX509KeyPair(certPEM, keyPEM)
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +271,7 @@ func (cm *CertManager) saveCA(dir string) error {
 		return err
 	}
 
-	keyDER, err := x509.MarshalECPrivateKey(cm.caKey)
+	keyDER, err := x509MarshalECPrivateKey(cm.caKey)
 	if err != nil {
 		return err
 	}

@@ -1,6 +1,11 @@
 package oci
 
-import "github.com/fsnotify/fsnotify"
+import (
+	"errors"
+	"testing"
+
+	"github.com/fsnotify/fsnotify"
+)
 
 // fakeOCIWatcher implements ociWatcher for tests.
 type fakeOCIWatcher struct {
@@ -33,3 +38,17 @@ var errFakeWatcher = &fakeWatcherError{}
 type fakeWatcherError struct{}
 
 func (e *fakeWatcherError) Error() string { return "fake watcher error" }
+
+// TestNewOCIWatcher_FSNotifyError covers the fsnotify.NewWatcher error path in
+// newOCIWatcher by replacing ociNewFSWatcher with a function that returns an error.
+func TestNewOCIWatcher_FSNotifyError(t *testing.T) {
+	orig := ociNewFSWatcher
+	defer func() { ociNewFSWatcher = orig }()
+	ociNewFSWatcher = func() (*fsnotify.Watcher, error) {
+		return nil, errors.New("simulated fsnotify failure")
+	}
+	_, err := newOCIWatcher()
+	if err == nil {
+		t.Fatal("expected error when fsnotify.NewWatcher fails")
+	}
+}

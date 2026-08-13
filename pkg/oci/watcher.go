@@ -18,8 +18,11 @@ func (fw *fsnotifyOCIWatcher) Close() error                  { return fw.w.Close
 func (fw *fsnotifyOCIWatcher) Events() <-chan fsnotify.Event { return fw.w.Events }
 func (fw *fsnotifyOCIWatcher) Errors() <-chan error           { return fw.w.Errors }
 
+// ociNewFSWatcher is the fsnotify.NewWatcher constructor, injectable in tests.
+var ociNewFSWatcher = fsnotify.NewWatcher
+
 func newOCIWatcher() (ociWatcher, error) {
-	w, err := fsnotify.NewWatcher()
+	w, err := ociNewFSWatcher()
 	if err != nil {
 		return nil, err
 	}

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	cryptorand "crypto/rand"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -475,5 +476,102 @@ func TestGenerateSelfSignedCert_CreateCertError(t *testing.T) {
 	_, err := generateSelfSignedCertWithRNG(rng, "example.com")
 	if err == nil {
 		t.Fatal("expected error when CreateCertificate fails in generateSelfSignedCert")
+	}
+}
+
+// TestGenerateCA_ParseCertError covers the x509.ParseCertificate error path in
+// generateCA by replacing x509ParseCertificate with a function that returns an error.
+func TestGenerateCA_ParseCertError(t *testing.T) {
+	orig := x509ParseCertificate
+	defer func() { x509ParseCertificate = orig }()
+	x509ParseCertificate = func(_ []byte) (*x509.Certificate, error) {
+		return nil, errors.New("injected parse error")
+	}
+	_, err := newCertManager("", cryptorand.Reader)
+	if err == nil {
+		t.Fatal("expected error when x509.ParseCertificate fails in generateCA")
+	}
+}
+
+// TestGenerateCert_MarshalKeyError covers the x509.MarshalECPrivateKey error path
+// in generateCert by replacing x509MarshalECPrivateKey with a function that returns
+// an error.
+func TestGenerateCert_MarshalKeyError(t *testing.T) {
+	cm, err := NewCertManager("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := x509MarshalECPrivateKey
+	defer func() { x509MarshalECPrivateKey = orig }()
+	x509MarshalECPrivateKey = func(_ *ecdsa.PrivateKey) ([]byte, error) {
+		return nil, errors.New("injected marshal error")
+	}
+	_, err = cm.GetCertificate("example.com")
+	if err == nil {
+		t.Fatal("expected error when x509.MarshalECPrivateKey fails in generateCert")
+	}
+}
+
+// TestGenerateCert_X509KeyPairError covers the tls.X509KeyPair error path in
+// generateCert by replacing tlsX509KeyPair with a function that returns an error.
+func TestGenerateCert_X509KeyPairError(t *testing.T) {
+	cm, err := NewCertManager("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := tlsX509KeyPair
+	defer func() { tlsX509KeyPair = orig }()
+	tlsX509KeyPair = func(_, _ []byte) (tls.Certificate, error) {
+		return tls.Certificate{}, errors.New("injected key-pair error")
+	}
+	_, err = cm.GetCertificate("example.com")
+	if err == nil {
+		t.Fatal("expected error when tls.X509KeyPair fails in generateCert")
+	}
+}
+
+// TestGenerateSelfSignedCert_MarshalKeyError covers the x509.MarshalECPrivateKey error
+// path in generateSelfSignedCertWithRNG by replacing x509MarshalECPrivateKey.
+func TestGenerateSelfSignedCert_MarshalKeyError(t *testing.T) {
+	orig := x509MarshalECPrivateKey
+	defer func() { x509MarshalECPrivateKey = orig }()
+	x509MarshalECPrivateKey = func(_ *ecdsa.PrivateKey) ([]byte, error) {
+		return nil, errors.New("injected marshal error")
+	}
+	_, err := generateSelfSignedCert("example.com")
+	if err == nil {
+		t.Fatal("expected error when x509.MarshalECPrivateKey fails in generateSelfSignedCert")
+	}
+}
+
+// TestGenerateSelfSignedCert_X509KeyPairError covers the tls.X509KeyPair error path
+// in generateSelfSignedCertWithRNG by replacing tlsX509KeyPair.
+func TestGenerateSelfSignedCert_X509KeyPairError(t *testing.T) {
+	orig := tlsX509KeyPair
+	defer func() { tlsX509KeyPair = orig }()
+	tlsX509KeyPair = func(_, _ []byte) (tls.Certificate, error) {
+		return tls.Certificate{}, errors.New("injected key-pair error")
+	}
+	_, err := generateSelfSignedCert("example.com")
+	if err == nil {
+		t.Fatal("expected error when tls.X509KeyPair fails in generateSelfSignedCert")
+	}
+}
+
+// TestSaveCA_MarshalKeyError covers the x509.MarshalECPrivateKey error path in
+// saveCA by replacing x509MarshalECPrivateKey with a function that returns an error.
+func TestSaveCA_MarshalKeyError(t *testing.T) {
+	cm, err := NewCertManager("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	orig := x509MarshalECPrivateKey
+	defer func() { x509MarshalECPrivateKey = orig }()
+	x509MarshalECPrivateKey = func(_ *ecdsa.PrivateKey) ([]byte, error) {
+		return nil, errors.New("injected marshal error")
+	}
+	if err := cm.saveCA(dir); err == nil {
+		t.Fatal("expected error when x509.MarshalECPrivateKey fails in saveCA")
 	}
 }
