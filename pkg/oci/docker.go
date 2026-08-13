@@ -456,7 +456,11 @@ type distributionDescriptor struct {
 
 // Subscribe watches for changes in the Docker image store and emits events.
 func (ds *DockerStore) Subscribe(ctx context.Context) (<-chan Event, error) {
-	watcher, err := fsnotify.NewWatcher()
+	return ds.subscribe(ctx, newOCIWatcher)
+}
+
+func (ds *DockerStore) subscribe(ctx context.Context, newWatcher func() (ociWatcher, error)) (<-chan Event, error) {
+	watcher, err := newWatcher()
 	if err != nil {
 		return nil, fmt.Errorf("create watcher: %w", err)
 	}
@@ -475,7 +479,7 @@ func (ds *DockerStore) Subscribe(ctx context.Context) (<-chan Event, error) {
 			select {
 			case <-ctx.Done():
 				return
-			case event := <-watcher.Events:
+			case event := <-watcher.Events():
 				if event.Has(fsnotify.Create) {
 					name := filepath.Base(event.Name)
 					dgst, err := digest.Parse("sha256:" + name)
@@ -506,7 +510,7 @@ func (ds *DockerStore) Subscribe(ctx context.Context) (<-chan Event, error) {
 						return
 					}
 				}
-			case err := <-watcher.Errors:
+			case err := <-watcher.Errors():
 				slog.Error("docker store watcher error", "error", err)
 			}
 		}

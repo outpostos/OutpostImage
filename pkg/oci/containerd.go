@@ -192,7 +192,11 @@ func (cs *ContainerdStore) HasBlob(_ context.Context, dgst digest.Digest) bool {
 // Subscribe watches for changes in the containerd content store and emits events.
 // It monitors the blobs/sha256/ directory for file creation and deletion with debouncing.
 func (cs *ContainerdStore) Subscribe(ctx context.Context) (<-chan Event, error) {
-	watcher, err := fsnotify.NewWatcher()
+	return cs.subscribe(ctx, newOCIWatcher)
+}
+
+func (cs *ContainerdStore) subscribe(ctx context.Context, newWatcher func() (ociWatcher, error)) (<-chan Event, error) {
+	watcher, err := newWatcher()
 	if err != nil {
 		return nil, fmt.Errorf("create watcher: %w", err)
 	}
@@ -243,7 +247,7 @@ func (cs *ContainerdStore) Subscribe(ctx context.Context) (<-chan Event, error) 
 			select {
 			case <-ctx.Done():
 				return
-			case event := <-watcher.Events:
+			case event := <-watcher.Events():
 				name := filepath.Base(event.Name)
 				if event.Has(fsnotify.Create) {
 					pending[name] = EventCreate
@@ -261,7 +265,7 @@ func (cs *ContainerdStore) Subscribe(ctx context.Context) (<-chan Event, error) 
 			case <-timerC:
 				flush()
 				timerC = nil
-			case err := <-watcher.Errors:
+			case err := <-watcher.Errors():
 				slog.Error("containerd store watcher error", "error", err)
 			}
 		}

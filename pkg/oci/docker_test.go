@@ -1730,3 +1730,47 @@ func TestTarDirectory_UnreadableFile(t *testing.T) {
 		t.Error("expected error when directory contains an unreadable file")
 	}
 }
+
+// TestDockerStore_Subscribe_NewWatcherError covers the newWatcher() error path in
+// subscribe when the watcher constructor returns an error.
+func TestDockerStore_Subscribe_NewWatcherError(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+
+	_, err := store.subscribe(context.Background(), func() (ociWatcher, error) {
+		return nil, &fakeWatcherError{}
+	})
+	if err == nil {
+		t.Fatal("expected error when watcher constructor fails")
+	}
+}
+
+// TestDockerStore_Subscribe_WatcherError covers the watcher.Errors() channel path in
+// subscribe. A fake watcher pushes an error; the goroutine logs it and continues;
+// context cancellation causes a clean exit.
+func TestDockerStore_Subscribe_WatcherError(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fw := newFakeOCIWatcher()
+	ch, err := store.subscribe(ctx, func() (ociWatcher, error) { return fw, nil })
+	if err != nil {
+		t.Fatalf("subscribe error: %v", err)
+	}
+
+	// Push a watcher error to exercise the slog.Error path.
+	fw.errs <- &fakeWatcherError{}
+
+	// Give the goroutine time to process the error, then cancel.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	// Channel must be closed after the goroutine exits.
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Error("timed out waiting for goroutine to exit after context cancel")
+	}
+}

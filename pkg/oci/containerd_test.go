@@ -1529,3 +1529,53 @@ func TestContainerdStore_LoadMetadataDB_OpenError_Socket(t *testing.T) {
 		t.Error("expected error when meta.db is a Unix socket (os.Open should fail)")
 	}
 }
+
+// TestContainerdStore_Subscribe_NewWatcherError covers the newWatcher() error path
+// in subscribe when the watcher constructor itself returns an error.
+func TestContainerdStore_Subscribe_NewWatcherError(t *testing.T) {
+	store, _ := setupContainerdTestStore(t)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	wantErr := &fakeWatcherError{}
+	_, err := store.subscribe(context.Background(), func() (ociWatcher, error) {
+		return nil, wantErr
+	})
+	if err == nil {
+		t.Fatal("expected error when watcher constructor fails")
+	}
+}
+
+// TestContainerdStore_Subscribe_WatcherError covers the watcher.Errors() channel path
+// in subscribe. A fake watcher pushes an error and the goroutine logs and continues;
+// context cancellation then causes a clean exit.
+func TestContainerdStore_Subscribe_WatcherError(t *testing.T) {
+	store, _ := setupContainerdTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	fw := newFakeOCIWatcher()
+	ch, err := store.subscribe(ctx, func() (ociWatcher, error) { return fw, nil })
+	if err != nil {
+		t.Fatalf("subscribe error: %v", err)
+	}
+
+	// Push a watcher error to exercise the slog.Error path.
+	fw.errs <- &fakeWatcherError{}
+
+	// Give the goroutine time to process the error, then cancel.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	// Channel must be closed after goroutine exits.
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Error("timed out waiting for goroutine to exit after context cancel")
+	}
+}

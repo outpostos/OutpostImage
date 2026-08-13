@@ -12,6 +12,10 @@ import (
 	"github.com/hashicorp/mdns"
 )
 
+// mdnsQuery is the package-level function used to perform mDNS queries. Tests
+// can replace it to inject errors and cover the slog.Warn path in queryAndMerge.
+var mdnsQuery = mdns.Query
+
 const (
 	// MDNSServiceName is the mDNS service type for OutpostImage nodes.
 	MDNSServiceName = "_outpostimage._tcp"
@@ -157,7 +161,7 @@ func (s *MDNSService) queryAndMerge(pw *PeerWatcher) {
 				params.Interface = iface
 			}
 		}
-		if err := mdns.Query(params); err != nil {
+		if err := mdnsQuery(params); err != nil {
 			slog.Warn("mDNS query failed", "error", err)
 		}
 	}()

@@ -2,8 +2,11 @@ package routing
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/hashicorp/mdns"
 )
 
 func TestNewMDNSService_Defaults(t *testing.T) {
@@ -421,5 +424,34 @@ func TestMDNSService_Discover_TickerPath(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("Discover did not return after ticker test within 20s")
+	}
+}
+
+// TestMDNSService_QueryAndMerge_QueryError exercises the slog.Warn("mDNS query failed")
+// path in queryAndMerge. The mdnsQuery package variable is replaced with a stub that
+// returns an error, so the goroutine logs the warning and closes entries cleanly.
+func TestMDNSService_QueryAndMerge_QueryError(t *testing.T) {
+	orig := mdnsQuery
+	t.Cleanup(func() { mdnsQuery = orig })
+	mdnsQuery = func(_ *mdns.QueryParam) error {
+		return errors.New("simulated mDNS query failure")
+	}
+
+	svc := NewMDNSService(MDNSConfig{
+		Port:        5000,
+		GracePeriod: 100 * time.Millisecond,
+	})
+	pw := NewPeerWatcher(nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.queryAndMerge(pw)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("queryAndMerge did not return within 5s when mdns.Query errors")
 	}
 }
