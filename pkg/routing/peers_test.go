@@ -106,6 +106,22 @@ func TestPeerWatcher_PeersIsCopy(t *testing.T) {
 	}
 }
 
+// waitForPeerCount polls pw.Peers() until len == want or timeout elapses.
+func waitForPeerCount(t *testing.T, pw *PeerWatcher, want int, timeout time.Duration) []string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		got := pw.Peers()
+		if len(got) == want {
+			return got
+		}
+		if time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestPeerWatcher_WatchFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "peers.txt")
@@ -124,10 +140,8 @@ func TestPeerWatcher_WatchFile(t *testing.T) {
 		errCh <- pw.WatchFile(ctx, path)
 	}()
 
-	// Wait for initial load
-	time.Sleep(200 * time.Millisecond)
-
-	got := pw.Peers()
+	// Poll until initial load completes (WatchFile sets peers synchronously before watching).
+	got := waitForPeerCount(t, pw, 2, 3*time.Second)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 peers after initial load, got %d: %v", len(got), got)
 	}
@@ -137,10 +151,8 @@ func TestPeerWatcher_WatchFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Wait for fsnotify to pick up the change
-	time.Sleep(500 * time.Millisecond)
-
-	got = pw.Peers()
+	// Poll until fsnotify picks up the change (tolerate slow/loaded systems).
+	got = waitForPeerCount(t, pw, 3, 5*time.Second)
 	if len(got) != 3 {
 		t.Fatalf("expected 3 peers after update, got %d: %v", len(got), got)
 	}
