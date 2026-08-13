@@ -89,11 +89,20 @@ func (pf *ParallelFetcher) Fetch(ctx context.Context, balancer *routing.Balancer
 			defer wg.Done()
 			defer func() { <-sem }() // release
 
-			// Try peers in round-robin order
-			var lastErr error
-			for attempt := 0; attempt < len(peers); attempt++ {
-				peer, _ := balancer.Next()
+			// Get one peer from the balancer for load distribution, then build
+			// a deduplicated fallback list from all known peers so that retries
+			// never land on the same dead peer twice due to shared round-robin state.
+			initialPeer, _ := balancer.Next()
+			peersToTry := make([]string, 0, len(peers))
+			peersToTry = append(peersToTry, initialPeer)
+			for _, p := range peers {
+				if p != initialPeer {
+					peersToTry = append(peersToTry, p)
+				}
+			}
 
+			var lastErr error
+			for _, peer := range peersToTry {
 				data, err := pf.fetchChunk(ctx, peer, blobPath, ch.start, ch.end)
 				if err != nil {
 					lastErr = err
