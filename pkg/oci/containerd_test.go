@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1475,6 +1476,7 @@ func TestContainerdStore_LoadMetadataDB_OpenError(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("skipped when running as root (root bypasses file permissions)")
 	}
+
 	root := t.TempDir()
 	dbDir := filepath.Join(root, "io.containerd.metadata.v1.bolt")
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
@@ -1493,5 +1495,37 @@ func TestContainerdStore_LoadMetadataDB_OpenError(t *testing.T) {
 	err := store.loadMetadataDB()
 	if err == nil {
 		t.Error("expected error when DB file is not readable")
+	}
+}
+
+// TestContainerdStore_LoadMetadataDB_OpenError_Socket covers the os.Open(dbPath) error
+// path in loadMetadataDB even when running as root. A Unix domain socket passes
+// os.Stat but os.Open returns ENXIO, triggering the "open source DB" error branch.
+// A short path is used to stay within the 108-character Unix socket path limit.
+func TestContainerdStore_LoadMetadataDB_OpenError_Socket(t *testing.T) {
+	// Use a short root so the socket path stays within the 108-char kernel limit.
+	root, err := os.MkdirTemp("", "oi-cdb-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+
+	dbDir := filepath.Join(root, "io.containerd.metadata.v1.bolt")
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dbDir, "meta.db")
+
+	// A Unix socket passes os.Stat but os.Open returns ENXIO ("no such device or
+	// address"), so this exercises the error path on all privilege levels.
+	l, err := net.Listen("unix", dbPath)
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	defer l.Close()
+
+	store := NewContainerdStore(root)
+	if err := store.loadMetadataDB(); err == nil {
+		t.Error("expected error when meta.db is a Unix socket (os.Open should fail)")
 	}
 }
