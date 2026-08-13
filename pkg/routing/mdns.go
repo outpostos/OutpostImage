@@ -16,6 +16,12 @@ import (
 // can replace it to inject errors and cover the slog.Warn path in queryAndMerge.
 var mdnsQuery = mdns.Query
 
+// mdnsNewServer is the package-level function used to create an mDNS server.
+// Tests can replace it to inject errors and cover the error path in Advertise.
+var mdnsNewServer = func(config *mdns.Config) (*mdns.Server, error) {
+	return mdns.NewServer(config)
+}
+
 const (
 	// MDNSServiceName is the mDNS service type for OutpostImage nodes.
 	MDNSServiceName = "_outpostimage._tcp"
@@ -106,7 +112,7 @@ func (s *MDNSService) Advertise() error {
 		}
 	}
 
-	server, err := mdns.NewServer(&mdns.Config{
+	server, err := mdnsNewServer(&mdns.Config{
 		Zone:  service,
 		Iface: iface,
 	})

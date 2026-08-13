@@ -3,6 +3,7 @@ package routing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -213,6 +214,32 @@ func TestMDNSService_Advertise_NewMDNSServiceError(t *testing.T) {
 	}
 	if svc.server != nil {
 		t.Error("server should be nil when Advertise fails at NewMDNSService")
+	}
+}
+
+// TestMDNSService_Advertise_NewServerError exercises the mdns.NewServer error path
+// in Advertise by injecting a failing mdnsNewServer function.
+func TestMDNSService_Advertise_NewServerError(t *testing.T) {
+	old := mdnsNewServer
+	mdnsNewServer = func(_ *mdns.Config) (*mdns.Server, error) {
+		return nil, fmt.Errorf("injected server error")
+	}
+	t.Cleanup(func() { mdnsNewServer = old })
+
+	svc := NewMDNSService(MDNSConfig{
+		Port:   5353,
+		NodeID: "test-node",
+	})
+
+	err := svc.Advertise()
+	if err == nil {
+		if svc.server != nil {
+			svc.server.Shutdown()
+		}
+		t.Fatal("expected error when mdns.NewServer fails")
+	}
+	if svc.server != nil {
+		t.Error("server should be nil when Advertise fails at NewServer")
 	}
 }
 

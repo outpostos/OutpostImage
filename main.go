@@ -26,6 +26,10 @@ import (
 // version is set at build time via -ldflags "-X main.version=v1.0.0".
 var version = "dev"
 
+// newCertMgr is the package-level function used to create a CertManager.
+// Tests can replace it to inject errors and cover the warning path in run().
+var newCertMgr = proxy.NewCertManager
+
 // RegistryCmd is the main subcommand that runs the OutpostImage service.
 type RegistryCmd struct {
 	RegistryAddr             string   `arg:"--registry-addr,env:REGISTRY_ADDR" default:":5000" help:"P2P Registry API listen address"`
@@ -192,7 +196,7 @@ func run(cmd *RegistryCmd) error {
 		slog.Warn("failed to create CA directory", "dir", caDir, "error", err)
 	}
 	var certMgr *proxy.CertManager
-	certMgr, err := proxy.NewCertManager(caDir)
+	certMgr, err := newCertMgr(caDir)
 	if err != nil {
 		slog.Warn("cert manager init failed (HTTPS interception disabled)", "error", err)
 	} else {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/outpostos/outpostimage/pkg/proxy"
 )
 
 func TestParseAddr(t *testing.T) {
@@ -414,5 +417,34 @@ func TestRun_WithMDNS_Succeeds(t *testing.T) {
 	err := runCmdWithSIGTERM(t, cmd, 400*time.Millisecond)
 	if err != nil {
 		t.Fatalf("run() returned error after SIGTERM with mDNS: %v", err)
+	}
+}
+
+// TestRun_CertManagerFails exercises the proxy.NewCertManager error path in run():
+// the slog.Warn("cert manager init failed (HTTPS interception disabled)") branch.
+// A fake newCertMgr is injected to return an error so the code path is covered
+// without requiring a broken system RNG.
+func TestRun_CertManagerFails(t *testing.T) {
+	old := newCertMgr
+	newCertMgr = func(_ string) (*proxy.CertManager, error) {
+		return nil, fmt.Errorf("injected cert manager failure")
+	}
+	t.Cleanup(func() { newCertMgr = old })
+
+	cmd := &RegistryCmd{
+		RegistryAddr:   ":0",
+		ProxyAddr:      ":0",
+		MetricsAddr:    ":0",
+		DockerRoot:     setupDockerRoot(t),
+		ContainerdRoot: t.TempDir(),
+		StoreType:      "auto",
+		MDNSEnabled:    false,
+		K8sDiscovery:   false,
+		LogLevel:       "ERROR",
+		CADir:          t.TempDir(),
+	}
+
+	if err := runCmdWithSIGTERM(t, cmd, 300*time.Millisecond); err != nil {
+		t.Fatalf("run() returned error after SIGTERM with failed cert manager: %v", err)
 	}
 }
