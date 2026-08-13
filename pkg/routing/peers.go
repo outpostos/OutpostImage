@@ -65,9 +65,38 @@ func (pw *PeerWatcher) MergeDynamic(peers []string) {
 	copy(pw.dynamic, peers)
 }
 
+// fileWatcher is the subset of fsnotify.Watcher used by watchFile, allowing
+// tests to inject a fake implementation to cover all select branches.
+type fileWatcher interface {
+	Add(name string) error
+	Close() error
+	Events() <-chan fsnotify.Event
+	Errors() <-chan error
+}
+
+// fsnotifyWatcher wraps *fsnotify.Watcher to satisfy fileWatcher.
+type fsnotifyWatcher struct{ w *fsnotify.Watcher }
+
+func (fw *fsnotifyWatcher) Add(name string) error       { return fw.w.Add(name) }
+func (fw *fsnotifyWatcher) Close() error                { return fw.w.Close() }
+func (fw *fsnotifyWatcher) Events() <-chan fsnotify.Event { return fw.w.Events }
+func (fw *fsnotifyWatcher) Errors() <-chan error          { return fw.w.Errors }
+
+func newFsnotifyWatcher() (fileWatcher, error) {
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, err
+	}
+	return &fsnotifyWatcher{w}, nil
+}
+
 // WatchFile watches the given file for changes and reloads the peer list.
 // It blocks until the context is cancelled. Intended to run in an errgroup.
 func (pw *PeerWatcher) WatchFile(ctx context.Context, path string) error {
+	return pw.watchFile(ctx, path, newFsnotifyWatcher)
+}
+
+func (pw *PeerWatcher) watchFile(ctx context.Context, path string, newWatcher func() (fileWatcher, error)) error {
 	// Initial load
 	peers, err := ParsePeersFile(path)
 	if err != nil {
@@ -76,7 +105,7 @@ func (pw *PeerWatcher) WatchFile(ctx context.Context, path string) error {
 	pw.SetPeers(peers)
 	slog.Info("loaded peers from file", "path", path, "count", len(peers))
 
-	watcher, err := fsnotify.NewWatcher()
+	watcher, err := newWatcher()
 	if err != nil {
 		return err
 	}
@@ -90,7 +119,7 @@ func (pw *PeerWatcher) WatchFile(ctx context.Context, path string) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case event := <-watcher.Events:
+		case event := <-watcher.Events():
 			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
 				peers, err := ParsePeersFile(path)
 				if err != nil {
@@ -100,7 +129,7 @@ func (pw *PeerWatcher) WatchFile(ctx context.Context, path string) error {
 				pw.SetPeers(peers)
 				slog.Info("reloaded peers from file", "path", path, "count", len(peers))
 			}
-		case err := <-watcher.Errors:
+		case err := <-watcher.Errors():
 			slog.Error("peers file watcher error", "error", err)
 		}
 	}

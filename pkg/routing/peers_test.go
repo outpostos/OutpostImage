@@ -2,11 +2,14 @@ package routing
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 func TestParsePeersFile(t *testing.T) {
@@ -239,6 +242,110 @@ func TestPeerWatcher_WatchFile_ReloadError(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("WatchFile returned unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("WatchFile did not return after context cancel")
+	}
+}
+
+// fakeWatcher implements fileWatcher for injection in tests.
+type fakeWatcher struct {
+	addErr  error
+	events  chan fsnotify.Event
+	errs    chan error
+	closed  bool
+}
+
+func newFakeWatcher() *fakeWatcher {
+	return &fakeWatcher{
+		events: make(chan fsnotify.Event, 1),
+		errs:   make(chan error, 1),
+	}
+}
+
+func (fw *fakeWatcher) Add(_ string) error          { return fw.addErr }
+func (fw *fakeWatcher) Close() error                { fw.closed = true; return nil }
+func (fw *fakeWatcher) Events() <-chan fsnotify.Event { return fw.events }
+func (fw *fakeWatcher) Errors() <-chan error          { return fw.errs }
+
+// TestPeerWatcher_WatchFile_NewWatcherError covers the newWatcher() error path
+// (lines 80-82 in peers.go).
+func TestPeerWatcher_WatchFile_NewWatcherError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "peers.txt")
+	if err := os.WriteFile(path, []byte("10.0.0.1:5000\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	pw := NewPeerWatcher(nil)
+	wantErr := errors.New("inotify: too many open files")
+	err := pw.watchFile(context.Background(), path, func() (fileWatcher, error) {
+		return nil, wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected %v, got %v", wantErr, err)
+	}
+}
+
+// TestPeerWatcher_WatchFile_AddError covers the watcher.Add() error path
+// (lines 85-87 in peers.go).
+func TestPeerWatcher_WatchFile_AddError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "peers.txt")
+	if err := os.WriteFile(path, []byte("10.0.0.1:5000\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	pw := NewPeerWatcher(nil)
+	wantErr := errors.New("watcher: no such file")
+	fw := newFakeWatcher()
+	fw.addErr = wantErr
+
+	err := pw.watchFile(context.Background(), path, func() (fileWatcher, error) {
+		return fw, nil
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected %v, got %v", wantErr, err)
+	}
+	if !fw.closed {
+		t.Fatal("expected watcher to be closed after Add error")
+	}
+}
+
+// TestPeerWatcher_WatchFile_WatcherError covers the watcher.Errors() receive
+// path (lines 103-104 in peers.go).
+func TestPeerWatcher_WatchFile_WatcherError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "peers.txt")
+	if err := os.WriteFile(path, []byte("10.0.0.1:5000\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	pw := NewPeerWatcher(nil)
+	fw := newFakeWatcher()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- pw.watchFile(ctx, path, func() (fileWatcher, error) {
+			return fw, nil
+		})
+	}()
+
+	// Inject a watcher error — watchFile should log it and continue.
+	time.Sleep(50 * time.Millisecond)
+	fw.errs <- errors.New("inotify: event queue overflow")
+
+	// Allow the error path to execute, then cancel.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
 	select {
 	case err := <-errCh:
 		if err != nil {
