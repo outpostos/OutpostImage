@@ -87,6 +87,10 @@ func NewKubernetesDiscoveryWithClient(cfg KubernetesConfig, client kubernetes.In
 // Discover watches the Endpoints for the configured Service and merges discovered
 // peers into the PeerWatcher. It blocks until the context is cancelled.
 func (kd *KubernetesDiscovery) Discover(ctx context.Context, pw *PeerWatcher) error {
+	return kd.discover(ctx, pw, 5*time.Second)
+}
+
+func (kd *KubernetesDiscovery) discover(ctx context.Context, pw *PeerWatcher, retryDelay time.Duration) error {
 	slog.Info("kubernetes peer discovery started",
 		"service", kd.config.ServiceName,
 		"namespace", kd.config.Namespace,
@@ -102,7 +106,7 @@ func (kd *KubernetesDiscovery) Discover(ctx context.Context, pw *PeerWatcher) er
 			select {
 			case <-ctx.Done():
 				return nil
-			case <-time.After(5 * time.Second):
+			case <-time.After(retryDelay):
 			}
 		}
 	}

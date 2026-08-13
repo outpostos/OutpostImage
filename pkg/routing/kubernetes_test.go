@@ -864,3 +864,36 @@ func TestDetectSelfIP_NoIPv4Interface(t *testing.T) {
 		t.Errorf("expected empty string when only loopback present, got %q", ip)
 	}
 }
+
+// TestKubernetesDiscovery_RetryDelay exercises the time.After(retryDelay) case
+// in discover(). It uses a fake client that fails on List, which makes
+// watchEndpoints return an error. With a 1ms retry delay, the test quickly
+// reaches the time.After branch, then cancels the context so Discover exits.
+func TestKubernetesDiscovery_RetryDelay(t *testing.T) {
+	fakeClient := fake.NewSimpleClientset()
+	// Make every Get/List return an error so watchEndpoints fails immediately.
+	fakeClient.PrependReactor("get", "endpoints", func(action ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, fmt.Errorf("simulated watch failure")
+	})
+
+	kd := NewKubernetesDiscoveryWithClient(KubernetesConfig{
+		ServiceName: "outpostimage",
+		Namespace:   "default",
+	}, fakeClient, "")
+	pw := NewPeerWatcher(nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Cancel the context shortly after the retry delay fires so we observe
+	// the time.After branch without waiting indefinitely.
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	err := kd.discover(ctx, pw, 1*time.Millisecond)
+	if err != nil {
+		t.Fatalf("discover() returned error after context cancel: %v", err)
+	}
+}
