@@ -23,6 +23,7 @@ var (
 	x509ParseCertificate    = x509.ParseCertificate
 	x509MarshalECPrivateKey = x509.MarshalECPrivateKey
 	tlsX509KeyPair          = tls.X509KeyPair
+	x509CreateCertificate   = x509.CreateCertificate
 )
 
 // CertManager generates and caches TLS certificates for MITM proxy.
@@ -123,7 +124,7 @@ func (cm *CertManager) generateCA(rng io.Reader) error {
 		IsCA:                  true,
 	}
 
-	certDER, err := x509.CreateCertificate(rng, template, template, &key.PublicKey, key)
+	certDER, err := x509CreateCertificate(rng, template, template, &key.PublicKey, key)
 	if err != nil {
 		return err
 	}

@@ -1774,3 +1774,219 @@ func TestDockerStore_Subscribe_WatcherError(t *testing.T) {
 		t.Error("timed out waiting for goroutine to exit after context cancel")
 	}
 }
+
+// TestTarDirectory_RelError exercises the filepathRel error path by injecting a
+// function that returns an error on the first non-root path visited.
+func TestTarDirectory_RelError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	wantErr := fmt.Errorf("injected rel error")
+	orig := filepathRel
+	filepathRel = func(basepath, targpath string) (string, error) {
+		rel, err := filepath.Rel(basepath, targpath)
+		if err != nil {
+			return "", err
+		}
+		if rel != "." {
+			return "", wantErr
+		}
+		return rel, nil
+	}
+	defer func() { filepathRel = orig }()
+
+	err := tarDirectory(io.Discard, dir)
+	if err == nil {
+		t.Fatal("expected error from filepath.Rel injection, got nil")
+	}
+}
+
+// TestTarDirectory_ReadlinkError exercises the osReadlink error path when a symlink
+// is present in the directory but Readlink returns an error.
+func TestTarDirectory_ReadlinkError(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "link")); err != nil {
+		t.Skip("symlinks not supported on this filesystem")
+	}
+
+	wantErr := fmt.Errorf("injected readlink error")
+	orig := osReadlink
+	osReadlink = func(string) (string, error) { return "", wantErr }
+	defer func() { osReadlink = orig }()
+
+	err := tarDirectory(io.Discard, dir)
+	if err == nil {
+		t.Fatal("expected error from os.Readlink injection, got nil")
+	}
+}
+
+// TestTarDirectory_OpenError exercises the osOpenForRead error path when a regular
+// file is visited but the open call returns an error.
+func TestTarDirectory_OpenError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	wantErr := fmt.Errorf("injected open error")
+	orig := osOpenForRead
+	osOpenForRead = func(string) (*os.File, error) { return nil, wantErr }
+	defer func() { osOpenForRead = orig }()
+
+	err := tarDirectory(io.Discard, dir)
+	if err == nil {
+		t.Fatal("expected error from os.Open injection, got nil")
+	}
+}
+
+// TestBuildImageManifest_ConfigMarshalError exercises the jsonMarshalFn error path
+// triggered on marshal of rawConfig (first json.Marshal call in buildImageManifest).
+func TestBuildImageManifest_ConfigMarshalError(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build minimal config + layer so buildImageManifest progresses past the layer
+	// loop and reaches the json.Marshal(rawConfig) call.
+	diffDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(diffDir, "layer.txt"), []byte("layer"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	diffID := digest.FromString("diff-for-marshal-config-error")
+	configContent := []byte(`{"rootfs":{"type":"layers","diff_ids":["` + diffID.String() + `"]}}`)
+	configDigest := digest.FromBytes(configContent)
+
+	store.mu.Lock()
+	tmpCfg, err := os.CreateTemp(t.TempDir(), "cfg-*")
+	if err != nil {
+		store.mu.Unlock()
+		t.Fatal(err)
+	}
+	if _, err := tmpCfg.Write(configContent); err != nil {
+		store.mu.Unlock()
+		t.Fatal(err)
+	}
+	tmpCfg.Close()
+	store.blobs[configDigest] = tmpCfg.Name()
+	store.layers[diffID] = layerEntry{diffPath: diffDir}
+	store.mu.Unlock()
+
+	callCount := 0
+	wantErr := fmt.Errorf("injected marshal error for rawConfig")
+	orig := jsonMarshalFn
+	jsonMarshalFn = func(v any) ([]byte, error) {
+		callCount++
+		if callCount == 1 {
+			return nil, wantErr
+		}
+		return json.Marshal(v)
+	}
+	defer func() { jsonMarshalFn = orig }()
+
+	store.buildImageManifest(configDigest)
+
+	store.mu.RLock()
+	_, built := store.manifests[configDigest]
+	store.mu.RUnlock()
+	if built {
+		t.Fatal("expected buildImageManifest to return early on rawConfig marshal error")
+	}
+}
+
+// TestBuildImageManifest_ManifestMarshalError exercises the jsonMarshalFn error path
+// for the second json.Marshal call (marshal of distributionManifest).
+func TestBuildImageManifest_ManifestMarshalError(t *testing.T) {
+	root := setupDockerFixture(t)
+	store := NewDockerStore(root)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	diffDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(diffDir, "layer.txt"), []byte("layer"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	diffID := digest.FromString("diff-for-marshal-manifest-error")
+	configContent := []byte(`{"rootfs":{"type":"layers","diff_ids":["` + diffID.String() + `"]}}`)
+	configDigest := digest.FromBytes(configContent)
+
+	store.mu.Lock()
+	tmpCfg, err := os.CreateTemp(t.TempDir(), "cfg-*")
+	if err != nil {
+		store.mu.Unlock()
+		t.Fatal(err)
+	}
+	if _, err := tmpCfg.Write(configContent); err != nil {
+		store.mu.Unlock()
+		t.Fatal(err)
+	}
+	tmpCfg.Close()
+	store.blobs[configDigest] = tmpCfg.Name()
+	store.layers[diffID] = layerEntry{diffPath: diffDir}
+	store.mu.Unlock()
+
+	callCount := 0
+	wantErr := fmt.Errorf("injected marshal error for manifest")
+	orig := jsonMarshalFn
+	// Let the first call (rawConfig) succeed; fail the second (manifest).
+	jsonMarshalFn = func(v any) ([]byte, error) {
+		callCount++
+		if callCount == 2 {
+			return nil, wantErr
+		}
+		return json.Marshal(v)
+	}
+	defer func() { jsonMarshalFn = orig }()
+
+	store.buildImageManifest(configDigest)
+
+	store.mu.RLock()
+	_, built := store.manifests[configDigest]
+	store.mu.RUnlock()
+	if built {
+		t.Fatal("expected buildImageManifest to return early on manifest marshal error")
+	}
+}
+
+// TestDockerStore_ScanImageDB_EntryInfoError exercises the dirEntryInfoFn error path
+// by injecting a function that returns an error for all directory entries.
+func TestDockerStore_ScanImageDB_EntryInfoError(t *testing.T) {
+	root := t.TempDir()
+
+	imagedbDir := filepath.Join(root, "image", "overlay2", "imagedb", "content", "sha256")
+	if err := os.MkdirAll(imagedbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Create a valid-looking entry (hex sha256 filename) so ReadDir finds it.
+	entryName := "aabbcc" + fmt.Sprintf("%058d", 0)
+	if err := os.WriteFile(filepath.Join(imagedbDir, entryName), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewDockerStore(root)
+
+	wantErr := fmt.Errorf("injected entry.Info() error")
+	orig := dirEntryInfoFn
+	dirEntryInfoFn = func(os.DirEntry) (os.FileInfo, error) { return nil, wantErr }
+	defer func() { dirEntryInfoFn = orig }()
+
+	// scanImageDB skips entries where Info() fails; should not return an error itself.
+	if err := store.scanImageDB(); err != nil {
+		t.Fatalf("scanImageDB() returned unexpected error: %v", err)
+	}
+
+	store.mu.RLock()
+	n := len(store.images)
+	store.mu.RUnlock()
+	if n != 0 {
+		t.Fatalf("expected 0 images (entry skipped), got %d", n)
+	}
+}

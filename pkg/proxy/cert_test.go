@@ -370,17 +370,16 @@ func TestGenerateCA_KeygenError(t *testing.T) {
 }
 
 // TestGenerateCA_CreateCertificateError exercises the x509.CreateCertificate error
-// path in generateCA. A P-256 private key requires ~32 bytes from the RNG; the
-// subsequent ECDSA signing inside CreateCertificate needs additional bytes.
-// Allowing exactly 32 bytes lets ecdsa.GenerateKey succeed but starves
-// CreateCertificate, returning an error.
+// path in generateCA by injecting a stub that always returns an error.
 func TestGenerateCA_CreateCertificateError(t *testing.T) {
-	rng := &countingReader{
-		inner:   cryptorand.Reader,
-		limit:   32,
-		failErr: errors.New("rng exhausted after key"),
+	wantErr := errors.New("injected CreateCertificate error")
+	orig := x509CreateCertificate
+	x509CreateCertificate = func(rand io.Reader, template, parent *x509.Certificate, pub, priv any) ([]byte, error) {
+		return nil, wantErr
 	}
-	_, err := newCertManager("", rng)
+	defer func() { x509CreateCertificate = orig }()
+
+	_, err := newCertManager("", cryptorand.Reader)
 	if err == nil {
 		t.Fatal("expected error when CreateCertificate fails due to exhausted RNG")
 	}

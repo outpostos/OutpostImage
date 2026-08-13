@@ -18,6 +18,15 @@ import (
 	"github.com/opencontainers/go-digest"
 )
 
+// Injectable stdlib vars for error-path testing.
+var (
+	filepathRel    = filepath.Rel
+	osReadlink     = os.Readlink
+	osOpenForRead  = os.Open
+	jsonMarshalFn  = json.Marshal
+	dirEntryInfoFn = func(e os.DirEntry) (os.FileInfo, error) { return e.Info() }
+)
+
 // DockerStore implements the Store interface for Docker's overlay2 storage driver.
 // It reads from the Docker image store in read-only mode.
 // Layer blob digests and distribution manifests are computed lazily on first access.
@@ -245,7 +254,7 @@ func tarDirectory(w io.Writer, dir string) error {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(dir, path)
+		rel, err := filepathRel(dir, path)
 		if err != nil {
 			return err
 		}
@@ -258,7 +267,7 @@ func tarDirectory(w io.Writer, dir string) error {
 		}
 		header.Name = rel
 		if info.Mode()&os.ModeSymlink != 0 {
-			link, lErr := os.Readlink(path)
+			link, lErr := osReadlink(path)
 			if lErr != nil {
 				return lErr
 			}
@@ -268,7 +277,7 @@ func tarDirectory(w io.Writer, dir string) error {
 			return err
 		}
 		if info.Mode().IsRegular() {
-			f, fErr := os.Open(path)
+			f, fErr := osOpenForRead(path)
 			if fErr != nil {
 				return fErr
 			}
@@ -405,7 +414,7 @@ func (ds *DockerStore) buildImageManifest(configDigest digest.Digest) {
 		DiffIDs []string `json:"diff_ids"`
 	}{Type: rootFS.Type, DiffIDs: newDiffIDs})
 	rawConfig["rootfs"] = newRootFS
-	newConfigData, err := json.Marshal(rawConfig)
+	newConfigData, err := jsonMarshalFn(rawConfig)
 	if err != nil {
 		return
 	}
@@ -421,7 +430,7 @@ func (ds *DockerStore) buildImageManifest(configDigest digest.Digest) {
 		},
 		Layers: layerDescs,
 	}
-	manifestBytes, err := json.Marshal(manifest)
+	manifestBytes, err := jsonMarshalFn(manifest)
 	if err != nil {
 		return
 	}
@@ -585,7 +594,7 @@ func (ds *DockerStore) scanImageDB() error {
 			continue
 		}
 
-		info, err := entry.Info()
+		info, err := dirEntryInfoFn(entry)
 		if err != nil {
 			continue
 		}

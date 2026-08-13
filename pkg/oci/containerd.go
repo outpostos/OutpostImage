@@ -18,6 +18,9 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+// osStatFile is the (*os.File).Stat method; injectable for testing.
+var osStatFile = (*os.File).Stat
+
 // ContainerdStore implements the Store interface for containerd's content store.
 // It reads from /var/lib/containerd/io.containerd.content.v1.content/ for blobs
 // and uses the bolt metadata DB for image/tag resolution.
@@ -173,7 +176,7 @@ func (cs *ContainerdStore) GetBlob(_ context.Context, dgst digest.Digest) (io.Re
 	if err != nil {
 		return nil, 0, err
 	}
-	info, err := f.Stat()
+	info, err := osStatFile(f)
 	if err != nil {
 		f.Close()
 		return nil, 0, err

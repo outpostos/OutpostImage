@@ -1579,3 +1579,34 @@ func TestContainerdStore_Subscribe_WatcherError(t *testing.T) {
 		t.Error("timed out waiting for goroutine to exit after context cancel")
 	}
 }
+
+// TestContainerdStore_GetBlob_StatError exercises the f.Stat() error path in GetBlob
+// by injecting a fake osStatFile that returns an error for the opened file.
+func TestContainerdStore_GetBlob_StatError(t *testing.T) {
+	store, _ := setupContainerdTestStore(t)
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a real file so os.Open succeeds, then inject an osStatFile that fails.
+	f, err := os.CreateTemp(t.TempDir(), "blob-stat-error-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	ghost := digest.FromString("ghost-blob-stat-error")
+	store.mu.Lock()
+	store.blobs[ghost] = f.Name()
+	store.mu.Unlock()
+
+	wantErr := fmt.Errorf("injected stat error")
+	orig := osStatFile
+	osStatFile = func(*os.File) (os.FileInfo, error) { return nil, wantErr }
+	defer func() { osStatFile = orig }()
+
+	_, _, err = store.GetBlob(context.Background(), ghost)
+	if err == nil {
+		t.Fatal("expected error from f.Stat(), got nil")
+	}
+}
