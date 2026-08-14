@@ -108,11 +108,14 @@ func (kd *KubernetesDiscovery) discover(ctx context.Context, pw *PeerWatcher, re
 		}
 		if err != nil {
 			slog.Warn("kubernetes watch error, will retry", "error", err)
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-time.After(retryDelay):
-			}
+		}
+		// Always wait retryDelay before the next attempt, even if watchEndpoints
+		// returned nil unexpectedly (e.g. due to fake-client behaviour in tests).
+		// This prevents a tight spin loop under any return condition.
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(retryDelay):
 		}
 	}
 }
