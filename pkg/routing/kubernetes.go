@@ -102,10 +102,11 @@ func (kd *KubernetesDiscovery) discover(ctx context.Context, pw *PeerWatcher, re
 	)
 
 	for {
-		if err := kd.watchEndpoints(ctx, pw); err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
+		err := kd.watchEndpoints(ctx, pw)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err != nil {
 			slog.Warn("kubernetes watch error, will retry", "error", err)
 			select {
 			case <-ctx.Done():
