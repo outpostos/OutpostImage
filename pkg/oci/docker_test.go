@@ -781,7 +781,7 @@ func TestDockerStore_Init_ScanImageDBError(t *testing.T) {
 	if err := os.Chmod(imagedbDir, 0000); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(imagedbDir, 0755)
+	defer func() { _ = os.Chmod(imagedbDir, 0755) }()
 
 	store := NewDockerStore(root)
 	if err := store.Init(context.Background()); err == nil {
@@ -806,7 +806,7 @@ func TestDockerStore_Init_ScanLayerDBError(t *testing.T) {
 	if err := os.Chmod(layerdbDir, 0000); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(layerdbDir, 0755)
+	defer func() { _ = os.Chmod(layerdbDir, 0755) }()
 
 	store := NewDockerStore(root)
 	if err := store.Init(context.Background()); err == nil {

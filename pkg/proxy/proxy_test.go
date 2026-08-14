@@ -330,10 +330,10 @@ func TestProxy_Connect_TCPTunnel(t *testing.T) {
 
 	// Send "hello" through the tunnel; echo server writes it back.
 	msg := "hello"
-	clientConn.Write([]byte(msg))
+	_, _ = clientConn.Write([]byte(msg))
 
 	got := make([]byte, len(msg))
-	io.ReadFull(clientConn, got)
+	_, _ = io.ReadFull(clientConn, got)
 	if string(got) != msg {
 		t.Errorf("echo = %q, want %q", got, msg)
 	}
@@ -451,9 +451,9 @@ func TestProxy_ServeHTTP_ConnectTunnel(t *testing.T) {
 	}
 
 	msg := "ping"
-	clientConn.Write([]byte(msg))
+	_, _ = clientConn.Write([]byte(msg))
 	got := make([]byte, len(msg))
-	io.ReadFull(clientConn, got)
+	_, _ = io.ReadFull(clientConn, got)
 	if string(got) != msg {
 		t.Errorf("echo = %q, want %q", got, msg)
 	}
@@ -757,7 +757,7 @@ func TestProxy_Connect_HijackError(t *testing.T) {
 	// Read it from clientConn to unblock that write; then Hijack returns its error
 	// and handleConnect exits cleanly.
 	header := make([]byte, 64)
-	clientConn.Read(header)
+	_, _ = clientConn.Read(header)
 	clientConn.Close()
 
 	select {

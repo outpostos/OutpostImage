@@ -234,7 +234,7 @@ func TestMDNSService_Advertise_NewServerError(t *testing.T) {
 	err := svc.Advertise()
 	if err == nil {
 		if svc.server != nil {
-			svc.server.Shutdown()
+			_ = svc.server.Shutdown()
 		}
 		t.Fatal("expected error when mdns.NewServer fails")
 	}

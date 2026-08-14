@@ -854,7 +854,7 @@ func TestContainerdStore_LoadMetadataDB_NoImagesOrTargetBuckets(t *testing.T) {
 	if err := db.Update(func(tx *bolt.Tx) error {
 		v1, _ := tx.CreateBucketIfNotExists([]byte("v1"))
 		// Create namespace but no "images" bucket inside it.
-		v1.CreateBucketIfNotExists([]byte("default"))
+		_, _ = v1.CreateBucketIfNotExists([]byte("default"))
 		return nil
 	}); err != nil {
 		db.Close()
@@ -901,7 +901,7 @@ func TestContainerdStore_LoadMetadataDB_BadDigest(t *testing.T) {
 		imgBucket, _ := imgs.CreateBucketIfNotExists([]byte("docker.io/library/nginx:latest"))
 		target, _ := imgBucket.CreateBucketIfNotExists([]byte("target"))
 		// Insert a malformed digest.
-		target.Put([]byte("digest"), []byte("not-a-valid-digest"))
+		_ = target.Put([]byte("digest"), []byte("not-a-valid-digest"))
 		return nil
 	}); err != nil {
 		db.Close()
@@ -947,7 +947,7 @@ func TestContainerdStore_LoadMetadataDB_NoTargetBucket(t *testing.T) {
 		ns, _ := v1.CreateBucketIfNotExists([]byte("default"))
 		imgs, _ := ns.CreateBucketIfNotExists([]byte("images"))
 		// Create an image bucket but do NOT create a "target" sub-bucket.
-		imgs.CreateBucketIfNotExists([]byte("docker.io/library/nginx:latest"))
+		_, _ = imgs.CreateBucketIfNotExists([]byte("docker.io/library/nginx:latest"))
 		return nil
 	}); err != nil {
 		db.Close()
@@ -994,7 +994,7 @@ func TestContainerdStore_LoadMetadataDB_NoDigestKey(t *testing.T) {
 		imgBucket, _ := imgs.CreateBucketIfNotExists([]byte("docker.io/library/nginx:latest"))
 		target, _ := imgBucket.CreateBucketIfNotExists([]byte("target"))
 		// Put mediatype but NOT digest.
-		target.Put([]byte("mediatype"), []byte("application/vnd.docker.distribution.manifest.v2+json"))
+		_ = target.Put([]byte("mediatype"), []byte("application/vnd.docker.distribution.manifest.v2+json"))
 		return nil
 	}); err != nil {
 		db.Close()
@@ -1040,7 +1040,7 @@ func TestContainerdStore_LoadMetadataDB_PlainImageKey(t *testing.T) {
 		imgs, _ := ns.CreateBucketIfNotExists([]byte("images"))
 		// Insert a plain key-value pair instead of a nested bucket.
 		// Bucket(key) returns nil for plain values so imageBucket == nil.
-		imgs.Put([]byte("plain-entry"), []byte("not-a-bucket"))
+		_ = imgs.Put([]byte("plain-entry"), []byte("not-a-bucket"))
 		return nil
 	}); err != nil {
 		db.Close()

@@ -760,7 +760,7 @@ func TestRequestRouter_LegacyP2P_Success(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if string(rec.Body.Bytes()) != string(blobData) {
+	if rec.Body.String() != string(blobData) {
 		t.Errorf("body = %q, want %q", rec.Body.Bytes(), blobData)
 	}
 }

@@ -617,7 +617,7 @@ func TestHandleGetBlob_WithRange(t *testing.T) {
 	if rec.Code != http.StatusPartialContent {
 		t.Fatalf("status = %d, want 206", rec.Code)
 	}
-	if string(rec.Body.Bytes()) != "fake" {
+	if rec.Body.String() != "fake" {
 		t.Errorf("body = %q, want %q", rec.Body.Bytes(), "fake")
 	}
 	if rec.Header().Get("Content-Range") == "" {
@@ -909,7 +909,7 @@ func TestRouteManifestMiss_UpstreamOK(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if string(rec.Body.Bytes()) != string(manifest) {
+	if rec.Body.String() != string(manifest) {
 		t.Errorf("body = %q, want %q", rec.Body.Bytes(), manifest)
 	}
 }
@@ -938,7 +938,7 @@ func TestRouteBlobMiss_UpstreamGet(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if string(rec.Body.Bytes()) != string(blobData) {
+	if rec.Body.String() != string(blobData) {
 		t.Errorf("body = %q, want %q", rec.Body.Bytes(), blobData)
 	}
 }
