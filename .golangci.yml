@@ -1,12 +1,29 @@
-linters-settings:
-  errcheck:
-    check-type-assertions: false
+version: "2"
 
-issues:
-  exclude-rules:
-    # corev1.Endpoints is deprecated in k8s 1.33+ but still functional;
-    # migration to EndpointSlices is tracked separately.
-    - path: pkg/routing/kubernetes
-      linters:
-        - staticcheck
-      text: "SA1019"
+linters:
+  settings:
+    errcheck:
+      check-type-assertions: false
+      exclude-functions:
+        # Writing to stderr/stdout is best-effort; failures are not actionable.
+        - fmt.Fprintln
+        - fmt.Fprintf
+        # Cleanup helpers in test/error paths: errors here rarely affect correctness.
+        - os.Remove
+        - os.RemoveAll
+        - os.Unsetenv
+        - os.Setenv
+  exclusions:
+    rules:
+      # Ignoring errors on Close() calls is idiomatic Go for cleanup/defer paths.
+      # golangci-lint v1 excluded (io.Closer).Close by default; restored here for
+      # parity when migrating to v2.
+      - source: '\.Close\(\)'
+        linters:
+          - errcheck
+      # corev1.Endpoints is deprecated in k8s 1.33+ but still functional;
+      # migration to EndpointSlices is tracked separately.
+      - path: pkg/routing/kubernetes
+        linters:
+          - staticcheck
+        text: "SA1019"
