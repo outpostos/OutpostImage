@@ -2,6 +2,29 @@
 
 All notable changes to OutpostImage are documented in this file.
 
+## v1.1.1 (2026-08-19)
+
+### Security
+
+- **CVE fix** — upgraded `golang.org/x/net` to v0.58.0 to address a DoS vulnerability in the HTTP/2 implementation
+
+### Bug Fixes
+
+- Routing goroutine leak: `discover()` goroutine now properly exits when Kubernetes client ignores context cancellation
+- Routing retry: always wait `retryDelay` before next discover attempt (prevents tight retry loops on error)
+- Dead peer retry: fixed shared round-robin state causing dead peers to be retried from the wrong index
+
+### Infrastructure
+
+- Upgraded Docker base image to `golang:1.25-alpine` for Go 1.25.0 module compatibility
+- Migrated golangci-lint to v2.12.2 with v2 config format; upgraded CI to `golangci-lint-action@v7`
+
+### Quality
+
+- Test coverage raised to 97%+ across all packages (from 60% at v1.0.0)
+- Kubernetes DaemonSet Helm chart validated end-to-end
+- End-to-end integration test suite: 100% P2P pull success rate, all fallback scenarios covered
+
 ## v1.1.0 (2026-04-19)
 
 ### Features
