@@ -26,7 +26,7 @@
 <!-- Hero -->
 <section class="hero">
   <div class="container">
-    <div class="hero-badge"><span class="badge-dot"></span> v1.0 — Now Available</div>
+    <div class="hero-badge"><span class="badge-dot"></span> v1.1.1 — Now Available</div>
     <h1>P2P OCI Image Distribution<br />for <span>Edge Computing</span></h1>
     <p class="hero-tagline">
       OutpostImage turns every edge node into a zero-overhead OCI registry by
@@ -50,6 +50,8 @@
       <span>Zero Storage Overhead</span>
       <span class="tag-sep">&middot;</span>
       <span>P2P Mesh</span>
+      <span class="tag-sep">&middot;</span>
+      <span>Kubernetes Ready</span>
       <span class="tag-sep">&middot;</span>
       <span>Offline First</span>
     </div>
@@ -169,6 +171,11 @@ Edge Node A                         Edge Node B
         <h3>Fully Configurable</h3>
         <p>All options available as CLI flags or environment variables. Hot-reloading peers file supported.</p>
       </div>
+      <div class="feature-card">
+        <div class="feature-icon">&#x2388;&#xfe0f;</div>
+        <h3>Kubernetes DaemonSet</h3>
+        <p>Production-ready Helm chart deploys a DaemonSet with RBAC, headless Service, and auto-discovery via Kubernetes Endpoints — zero peer config required.</p>
+      </div>
     </div>
   </div>
 </section>
@@ -208,12 +215,17 @@ Edge Node A                         Edge Node B
           <tr>
             <td>P2P discovery</td>
             <td>OCI / libp2p</td>
-            <td>Static peers + mDNS</td>
+            <td class="check-better">Static peers + mDNS + <strong>K8s Endpoints</strong></td>
           </tr>
           <tr>
             <td>Multi-registry</td>
             <td class="check-yes">Yes</td>
             <td class="check-yes">Yes</td>
+          </tr>
+          <tr>
+            <td>Kubernetes deployment</td>
+            <td>Helm chart</td>
+            <td class="check-better">Helm chart (DaemonSet + RBAC + auto-discovery)</td>
           </tr>
           <tr>
             <td>Invasiveness</td>
@@ -671,6 +683,7 @@ Redis server v=7.4.7</code></pre>
       <button class="tab-btn active" onclick="switchTab('binary')">Binary</button>
       <button class="tab-btn" onclick="switchTab('docker')">Docker</button>
       <button class="tab-btn" onclick="switchTab('compose')">Docker Compose</button>
+      <button class="tab-btn" onclick="switchTab('kubernetes')">Kubernetes</button>
       <button class="tab-btn" onclick="switchTab('proxy')">Configure Proxy</button>
     </div>
 
@@ -706,6 +719,24 @@ echo "192.168.1.102:5000" &gt;&gt; peers.txt
 <span class="cmd">docker compose up -d</span></code></pre>
     </div>
 
+    <div id="tab-kubernetes" class="tab-panel">
+      <pre><code><span class="comment"># Add the OutpostImage Helm chart repo</span>
+helm repo add outpostimage https://outpostos.github.io/outpostimage
+helm repo update
+
+<span class="comment"># Deploy as a DaemonSet — Kubernetes Endpoints auto-discovery enabled by default</span>
+<span class="cmd">helm install outpostimage outpostimage/outpostimage \
+  --namespace outpostimage --create-namespace</span>
+
+<span class="comment"># Verify the DaemonSet is running on all nodes</span>
+kubectl -n outpostimage get daemonset
+kubectl -n outpostimage get pods -o wide
+
+<span class="comment"># Configure Docker on each node to use the proxy</span>
+<span class="comment"># (set HTTP_PROXY / HTTPS_PROXY in your workload Pods, or in /etc/systemd/system/docker.service.d/)</span>
+<span class="comment"># HTTP_PROXY=http://&lt;NODE_IP&gt;:3128 HTTPS_PROXY=http://&lt;NODE_IP&gt;:3128</span></code></pre>
+    </div>
+
     <div id="tab-proxy" class="tab-panel">
       <pre><code><span class="comment"># /etc/docker/daemon.json — point Docker at the proxy</span>
 {
@@ -739,6 +770,8 @@ update-ca-certificates</code></pre>
       <span>containerd</span>
       <span class="tag-sep">&middot;</span>
       <span>OCI</span>
+      <span class="tag-sep">&middot;</span>
+      <span>Kubernetes</span>
       <span class="tag-sep">&middot;</span>
       <span>Prometheus</span>
     </div>
