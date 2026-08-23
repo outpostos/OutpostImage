@@ -1,5 +1,14 @@
 # Build artifacts
 bin/
+outpostimage
+outpostimage-*
+
+# Claude Code session files
+.claude/
+
+# Reference/scratch directories and one-time scripts
+depot/
+setup-repo-and-pr.sh
 
 # IDE
 .idea/

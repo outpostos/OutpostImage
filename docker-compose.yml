@@ -1,0 +1,54 @@
+version: "3.8"
+
+services:
+  outpostimage:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: outpostimage:latest
+    container_name: outpostimage
+    ports:
+      - "5000:5000"  # P2P Registry API
+      - "3128:3128"  # HTTP Proxy
+      - "9090:9090"  # Prometheus Metrics
+    volumes:
+      # Mount Docker socket for observing local Docker images
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Mount Docker storage directory for reading image data
+      - /var/lib/docker:/var/lib/docker:ro
+      # Persist CA certificates
+      - outpostimage-ca:/etc/outpostimage
+      # Optional: peers file for hot-reload
+      - ./peers.txt:/etc/outpostimage/peers.txt:ro
+    environment:
+      - LOG_LEVEL=INFO
+      - REGISTRY_ADDR=:5000
+      - PROXY_ADDR=:3128
+      - METRICS_ADDR=:9090
+      - DOCKER_ROOT=/var/lib/docker
+      - PEERS_FILE=/etc/outpostimage/peers.txt
+      - CA_DIR=/etc/outpostimage
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: outpostimage-prometheus
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    restart: unless-stopped
+
+volumes:
+  outpostimage-ca:
+  prometheus-data:
