@@ -24,6 +24,21 @@ type manifestEntry struct {
 	mediaType string
 }
 
+// maxManifestFetchSize bounds how much manifest body is buffered from a
+// P2P peer or upstream (m-4; aligned with the proxy-side admission limit).
+// OCI recommends manifests stay below 4 MiB.
+const maxManifestFetchSize = 4 << 20
+
+// Admitter checks manifest digests against a hash whitelist table.
+// A nil Admitter on the handler disables admission entirely (existing
+// behavior unchanged). Implemented by admission.Checker.
+type Admitter interface {
+	// Allowed reports whether the manifest digest is in the whitelist.
+	Allowed(dgst digest.Digest) bool
+	// Version identifies the active whitelist table revision (for alerts).
+	Version() string
+}
+
 // OCIHandler implements the OCI Distribution Spec v2 endpoints.
 type OCIHandler struct {
 	store            oci.Store
@@ -31,6 +46,7 @@ type OCIHandler struct {
 	upstreamFallback bool
 	upstreamRegistry string
 	metrics          *metrics.Metrics
+	admission        Admitter
 
 	// manifestCache maps content-digest → manifest bytes+mediaType.
 	// containerd fetches a manifest by tag, then re-fetches by the
@@ -68,6 +84,14 @@ func WithUpstreamRegistry(registry string) Option {
 func WithMetrics(m *metrics.Metrics) Option {
 	return func(h *OCIHandler) {
 		h.metrics = m
+	}
+}
+
+// WithAdmission enables hash whitelist admission on manifest serving.
+// Passing nil leaves admission disabled.
+func WithAdmission(a Admitter) Option {
+	return func(h *OCIHandler) {
+		h.admission = a
 	}
 }
 
@@ -133,6 +157,24 @@ func (h *OCIHandler) handleVersionCheck(w http.ResponseWriter, r *http.Request) 
 	_ = json.NewEncoder(w).Encode(map[string]any{})
 }
 
+// admitManifest applies hash whitelist admission to a manifest digest.
+// With no admitter configured it always passes. On denial it writes an
+// OCI-spec DENIED error (403) plus a structured alert log and returns false.
+func (h *OCIHandler) admitManifest(w http.ResponseWriter, r *http.Request, dgst digest.Digest) bool {
+	if h.admission == nil || h.admission.Allowed(dgst) {
+		return true
+	}
+	slog.Warn("admission denied: manifest digest not in whitelist",
+		"alert", "admission_denied",
+		"digest", dgst.String(),
+		"path", r.URL.Path,
+		"whitelist_version", h.admission.Version(),
+	)
+	writeOCIError(w, http.StatusForbidden, "DENIED",
+		"manifest digest not in admission whitelist", dgst.String())
+	return false
+}
+
 // handleGetManifest implements GET /v2/{name}/manifests/{reference}.
 func (h *OCIHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, name, reference string) {
 	ctx := r.Context()
@@ -145,6 +187,12 @@ func (h *OCIHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, n
 		contentDgst, err := digest.Parse(reference)
 		if err != nil {
 			writeOCIError(w, http.StatusBadRequest, "DIGEST_INVALID", "invalid digest format", reference)
+			return
+		}
+
+		// Admission by digest happens before any cache/store/P2P/upstream
+		// work: a denied digest must never be fetched or served.
+		if !h.admitManifest(w, r, contentDgst) {
 			return
 		}
 
@@ -237,6 +285,11 @@ func (h *OCIHandler) handleGetManifest(w http.ResponseWriter, r *http.Request, n
 	// not the config digest used as a lookup key. containerd validates this.
 	contentDigest := digest.FromBytes(data)
 
+	// Admission is by manifest content digest (what clients pin), not by tag.
+	if !h.admitManifest(w, r, contentDigest) {
+		return
+	}
+
 	// Cache by content digest so containerd can re-fetch by digest.
 	h.mu.Lock()
 	h.manifestCache[contentDigest] = manifestEntry{data: data, mediaType: mediaType}
@@ -278,6 +331,13 @@ func (h *OCIHandler) routeManifestMiss(w http.ResponseWriter, r *http.Request, d
 	defer resp.Body.Close()
 	h.recordRegistryRead("manifest", "upstream")
 	if resp.StatusCode != http.StatusOK {
+		// B-1: with admission enabled, non-200 responses are fail-closed —
+		// clients treat 200–399 as success, so a manifest body riding a
+		// 206/redirect would bypass the digest check entirely.
+		if h.admission != nil {
+			h.relayNon200Checked(w, r, resp)
+			return true
+		}
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		if r.Method != http.MethodHead {
@@ -288,17 +348,57 @@ func (h *OCIHandler) routeManifestMiss(w http.ResponseWriter, r *http.Request, d
 	return h.serveFetchedManifest(w, r, resp)
 }
 
+// relayNon200Checked handles a non-200 upstream manifest response under
+// admission (B-1 hardening):
+//   - 2xx/3xx (≠200): answered 502 with no body relayed; only a verified
+//     200 may release manifest content, even if its digest is whitelisted.
+//   - >=400: status and headers relayed (auth challenges such as
+//     Www-Authenticate must survive) but the body is dropped so no
+//     manifest content can ride an error status.
+func (h *OCIHandler) relayNon200Checked(w http.ResponseWriter, r *http.Request, resp *proxy.PeerFetchResponse) {
+	if resp.StatusCode < http.StatusBadRequest {
+		slog.Warn("admission blocked non-200 success manifest response",
+			"alert", "admission_denied",
+			"status", resp.StatusCode,
+			"path", r.URL.Path,
+			"whitelist_version", h.admission.Version(),
+		)
+		writeOCIError(w, http.StatusBadGateway, "UNAVAILABLE",
+			"upstream returned non-200 success for manifest", resp.StatusCode)
+		return
+	}
+	copyResponseHeaders(w.Header(), resp.Header)
+	w.Header().Del("Content-Length")
+	w.WriteHeader(resp.StatusCode)
+	// body intentionally dropped
+}
+
 func (h *OCIHandler) serveFetchedManifest(w http.ResponseWriter, r *http.Request, resp *proxy.PeerFetchResponse) bool {
-	data, err := io.ReadAll(resp.Body)
+	// m-4: bound the buffered manifest read (aligned with the proxy-side
+	// admission limit); an oversized manifest is fail-closed, not served.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxManifestFetchSize+1))
 	if err != nil {
 		slog.Debug("registry manifest fetch read failed", "path", r.URL.Path, "error", err)
 		return false
+	}
+	if len(data) > maxManifestFetchSize {
+		slog.Warn("registry manifest fetch exceeds size limit",
+			"path", r.URL.Path, "limit", maxManifestFetchSize)
+		writeOCIError(w, http.StatusBadGateway, "UNAVAILABLE",
+			"fetched manifest exceeds size limit", maxManifestFetchSize)
+		return true
 	}
 	mediaType := resp.Header.Get("Content-Type")
 	if mediaType == "" {
 		mediaType = "application/vnd.docker.distribution.manifest.v2+json"
 	}
 	contentDigest := digest.FromBytes(data)
+
+	// Fetched manifests (P2P peer or upstream) are admission-checked by
+	// their content digest before being cached or served.
+	if !h.admitManifest(w, r, contentDigest) {
+		return true
+	}
 
 	h.mu.Lock()
 	h.manifestCache[contentDigest] = manifestEntry{data: data, mediaType: mediaType}
