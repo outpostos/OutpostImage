@@ -14,6 +14,7 @@ import (
 	"github.com/alexflint/go-arg"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/outpostos/outpostimage/pkg/admission"
 	"github.com/outpostos/outpostimage/pkg/httpx"
 	"github.com/outpostos/outpostimage/pkg/metrics"
 	"github.com/outpostos/outpostimage/pkg/oci"
@@ -46,6 +47,8 @@ type RegistryCmd struct {
 	CADir                    string   `arg:"--ca-dir,env:CA_DIR" default:"/etc/outpostimage" help:"Directory for CA certificate and key"`
 	InsecureRegistries       []string `arg:"--insecure-registry,env:INSECURE_REGISTRIES,separate" help:"Registries to connect without TLS verification (host:port or host)"`
 	RegistryUpstreamFallback bool     `arg:"--registry-upstream-fallback,env:REGISTRY_UPSTREAM_FALLBACK" default:"true" help:"Allow registry endpoint to fall back to upstream after local and P2P miss"`
+	AdmissionWhitelist       string   `arg:"--admission-whitelist,env:ADMISSION_WHITELIST" help:"Path to manifest digest whitelist JSON; empty disables admission"`
+	AdmissionPollInterval    string   `arg:"--admission-poll-interval,env:ADMISSION_POLL_INTERVAL" default:"10s" help:"Whitelist file poll interval for hot reload (Go duration)"`
 }
 
 // Args holds the top-level CLI arguments with subcommands.
@@ -100,6 +103,28 @@ func run(cmd *RegistryCmd) error {
 	defer cancel()
 
 	g, ctx := errgroup.WithContext(ctx)
+
+	// Hash whitelist admission (T12): configured path must load or we fail
+	// fast — admission is never silently skipped. Empty path disables it.
+	var admChecker *admission.Checker
+	if cmd.AdmissionWhitelist != "" {
+		interval, err := time.ParseDuration(cmd.AdmissionPollInterval)
+		if err != nil || interval <= 0 {
+			return fmt.Errorf("invalid --admission-poll-interval %q: %w", cmd.AdmissionPollInterval, err)
+		}
+		admChecker, err = admission.NewChecker(cmd.AdmissionWhitelist)
+		if err != nil {
+			return err
+		}
+		g.Go(func() error {
+			return admChecker.Watch(ctx, interval)
+		})
+		slog.Info("hash whitelist admission enabled",
+			"whitelist", cmd.AdmissionWhitelist,
+			"version", admChecker.Version(),
+			"poll_interval", interval.String(),
+		)
+	}
 
 	// Initialize store based on --store-type
 	store := initStore(ctx, cmd)
@@ -172,12 +197,15 @@ func run(cmd *RegistryCmd) error {
 	registryMux.HandleFunc("GET /healthz", httpx.HandleHealthz())
 	registryMux.HandleFunc("GET /readyz", httpx.HandleReadyz())
 
-	ociHandler := registry.NewOCIHandler(
-		store,
+	ociOpts := []registry.Option{
 		registry.WithRouter(router),
 		registry.WithUpstreamFallback(cmd.RegistryUpstreamFallback),
 		registry.WithMetrics(metrics.Default),
-	)
+	}
+	if admChecker != nil {
+		ociOpts = append(ociOpts, registry.WithAdmission(admChecker))
+	}
+	ociHandler := registry.NewOCIHandler(store, ociOpts...)
 	ociHandler.RegisterRoutes(registryMux)
 
 	digestHandler := registry.NewDigestHandler(tracker)
@@ -201,6 +229,9 @@ func run(cmd *RegistryCmd) error {
 
 	// HTTP Proxy server - intercepts OCI registry traffic (HTTP + HTTPS MITM)
 	interceptor := proxy.RequestRouter(tracker, cmd.RegistryAddr, router)
+	if admChecker != nil {
+		interceptor = proxy.AdmissionInterceptor(admChecker, interceptor)
+	}
 	p := proxy.NewProxy(interceptor, certMgr).WithInsecureRegistries(cmd.InsecureRegistries)
 	proxyHandler := metrics.NewMiddleware("proxy")(p)
 	httpx.Serve(ctx, g, cmd.ProxyAddr, proxyHandler, "proxy")
