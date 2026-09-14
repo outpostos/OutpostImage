@@ -70,8 +70,12 @@ func AdmissionInterceptor(adm Admitter, next func(w http.ResponseWriter, r *http
 		if strings.Contains(reference, ":") {
 			dgst, err := digest.Parse(reference)
 			if err != nil {
-				// Let the backing handler produce its DIGEST_INVALID error.
-				return next(w, r)
+				// Fail closed locally (M-1): falling through to next would
+				// end in unchecked upstream forwarding on a miss.
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = fmt.Fprintf(w, `{"errors":[{"code":"DIGEST_INVALID","message":"invalid digest format","detail":%q}]}%s`, reference, "\n")
+				return true
 			}
 			if !adm.Allowed(dgst) {
 				writeAdmissionDenied(w, r, adm, dgst.String(), "manifest digest not in admission whitelist")
@@ -117,20 +121,43 @@ func manifestReference(path string) (string, bool) {
 }
 
 // serveCheckedManifest verifies a buffered manifest response against the
-// whitelist and writes either the original response or a 403 DENIED.
-// Non-200 responses (errors, redirects) carry no manifest content and are
-// relayed as-is.
+// whitelist and writes either the original response or a denial.
+//
+// B-1 hardening — status handling is exhaustive and fail-closed:
+//   - 200: content digest checked against the whitelist; miss → 403 DENIED.
+//   - other 2xx/3xx (e.g. 206, redirects): clients treat 200–399 as
+//     success, so a body here could smuggle an unverified manifest. These
+//     are answered 502 with no body relayed, even if the digest matches
+//     (only a verified 200 releases manifest content).
+//   - >=400: the status and headers are relayed (auth challenges like
+//     Www-Authenticate must survive) but the body is dropped so no
+//     manifest content can ride an error status.
 func serveCheckedManifest(w http.ResponseWriter, r *http.Request, adm Admitter, status int, header http.Header, body []byte) {
-	if status == http.StatusOK {
+	switch {
+	case status == http.StatusOK:
 		dgst := digest.FromBytes(body)
 		if !adm.Allowed(dgst) {
 			writeAdmissionDenied(w, r, adm, dgst.String(), "manifest digest not in admission whitelist")
 			return
 		}
+		copyHeaders(w.Header(), header)
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
+	case status < http.StatusBadRequest:
+		slog.Warn("admission blocked non-200 success manifest response",
+			"alert", "admission_denied",
+			"status", status,
+			"path", r.URL.Path,
+			"host", r.URL.Host,
+			"whitelist_version", adm.Version(),
+		)
+		http.Error(w, "upstream returned non-200 success for manifest", http.StatusBadGateway)
+	default:
+		copyHeaders(w.Header(), header)
+		w.Header().Del("Content-Length")
+		w.WriteHeader(status)
+		// body intentionally dropped
 	}
-	copyHeaders(w.Header(), header)
-	w.WriteHeader(status)
-	_, _ = w.Write(body)
 }
 
 // fetchUpstreamManifest fetches the manifest from the original registry.

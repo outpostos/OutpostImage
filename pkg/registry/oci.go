@@ -24,6 +24,11 @@ type manifestEntry struct {
 	mediaType string
 }
 
+// maxManifestFetchSize bounds how much manifest body is buffered from a
+// P2P peer or upstream (m-4; aligned with the proxy-side admission limit).
+// OCI recommends manifests stay below 4 MiB.
+const maxManifestFetchSize = 4 << 20
+
 // Admitter checks manifest digests against a hash whitelist table.
 // A nil Admitter on the handler disables admission entirely (existing
 // behavior unchanged). Implemented by admission.Checker.
@@ -326,6 +331,13 @@ func (h *OCIHandler) routeManifestMiss(w http.ResponseWriter, r *http.Request, d
 	defer resp.Body.Close()
 	h.recordRegistryRead("manifest", "upstream")
 	if resp.StatusCode != http.StatusOK {
+		// B-1: with admission enabled, non-200 responses are fail-closed —
+		// clients treat 200–399 as success, so a manifest body riding a
+		// 206/redirect would bypass the digest check entirely.
+		if h.admission != nil {
+			h.relayNon200Checked(w, r, resp)
+			return true
+		}
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		if r.Method != http.MethodHead {
@@ -336,11 +348,45 @@ func (h *OCIHandler) routeManifestMiss(w http.ResponseWriter, r *http.Request, d
 	return h.serveFetchedManifest(w, r, resp)
 }
 
+// relayNon200Checked handles a non-200 upstream manifest response under
+// admission (B-1 hardening):
+//   - 2xx/3xx (≠200): answered 502 with no body relayed; only a verified
+//     200 may release manifest content, even if its digest is whitelisted.
+//   - >=400: status and headers relayed (auth challenges such as
+//     Www-Authenticate must survive) but the body is dropped so no
+//     manifest content can ride an error status.
+func (h *OCIHandler) relayNon200Checked(w http.ResponseWriter, r *http.Request, resp *proxy.PeerFetchResponse) {
+	if resp.StatusCode < http.StatusBadRequest {
+		slog.Warn("admission blocked non-200 success manifest response",
+			"alert", "admission_denied",
+			"status", resp.StatusCode,
+			"path", r.URL.Path,
+			"whitelist_version", h.admission.Version(),
+		)
+		writeOCIError(w, http.StatusBadGateway, "UNAVAILABLE",
+			"upstream returned non-200 success for manifest", resp.StatusCode)
+		return
+	}
+	copyResponseHeaders(w.Header(), resp.Header)
+	w.Header().Del("Content-Length")
+	w.WriteHeader(resp.StatusCode)
+	// body intentionally dropped
+}
+
 func (h *OCIHandler) serveFetchedManifest(w http.ResponseWriter, r *http.Request, resp *proxy.PeerFetchResponse) bool {
-	data, err := io.ReadAll(resp.Body)
+	// m-4: bound the buffered manifest read (aligned with the proxy-side
+	// admission limit); an oversized manifest is fail-closed, not served.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxManifestFetchSize+1))
 	if err != nil {
 		slog.Debug("registry manifest fetch read failed", "path", r.URL.Path, "error", err)
 		return false
+	}
+	if len(data) > maxManifestFetchSize {
+		slog.Warn("registry manifest fetch exceeds size limit",
+			"path", r.URL.Path, "limit", maxManifestFetchSize)
+		writeOCIError(w, http.StatusBadGateway, "UNAVAILABLE",
+			"fetched manifest exceeds size limit", maxManifestFetchSize)
+		return true
 	}
 	mediaType := resp.Header.Get("Content-Type")
 	if mediaType == "" {

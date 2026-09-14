@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/opencontainers/go-digest"
@@ -237,5 +238,143 @@ func TestAdmissionInterceptor_VersionCheckPassThrough(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// B-1: a colluding upstream answering a tag GET with a non-200 success
+// status (e.g. 206) and a malicious manifest body must not have that body
+// relayed unchecked — clients treat 200–399 as success. Expect fail-closed
+// 502 with no body leak.
+func TestAdmissionInterceptor_Upstream206BodyNotRelayed(t *testing.T) {
+	malicious := []byte(`{"schemaVersion":2,"malicious":true}`)
+	adm := &fakeAdmitter{allowed: map[digest.Digest]bool{}}
+	next := func(w http.ResponseWriter, r *http.Request) bool { return false } // miss
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(malicious)
+	}))
+	defer upstream.Close()
+
+	req := httptest.NewRequest(http.MethodGet,
+		upstream.URL+"/v2/library/app/manifests/latest", nil)
+	rec := httptest.NewRecorder()
+
+	if handled := AdmissionInterceptor(adm, next)(rec, req); !handled {
+		t.Fatal("manifest request must be handled by admission interceptor")
+	}
+	if rec.Code != http.StatusBadGateway && rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 502 or 403", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "malicious") {
+		t.Fatalf("malicious body leaked to client: %s", rec.Body.String())
+	}
+}
+
+// B-1 companion: even a whitelisted manifest body carried on a non-200
+// success status is blocked — only a verified 200 releases manifest content.
+func TestAdmissionInterceptor_Upstream206EvenListedBlocked(t *testing.T) {
+	data := []byte(`{"schemaVersion":2}`)
+	adm := &fakeAdmitter{allowed: map[digest.Digest]bool{digest.FromBytes(data): true}}
+	next := func(w http.ResponseWriter, r *http.Request) bool { return false }
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(data)
+	}))
+	defer upstream.Close()
+
+	req := httptest.NewRequest(http.MethodGet,
+		upstream.URL+"/v2/library/app/manifests/latest", nil)
+	rec := httptest.NewRecorder()
+
+	if handled := AdmissionInterceptor(adm, next)(rec, req); !handled {
+		t.Fatal("expected handled")
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+}
+
+// B-1: upstream error responses (>=400) relay status and safe headers only;
+// the body is dropped so no manifest content can ride an error status.
+func TestAdmissionInterceptor_UpstreamErrorBodyDropped(t *testing.T) {
+	adm := &fakeAdmitter{allowed: map[digest.Digest]bool{}}
+	next := func(w http.ResponseWriter, r *http.Request) bool { return false }
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Www-Authenticate", `Bearer realm="https://auth.example.com/token"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"schemaVersion":2,"smuggled":true}`))
+	}))
+	defer upstream.Close()
+
+	req := httptest.NewRequest(http.MethodGet,
+		upstream.URL+"/v2/library/app/manifests/latest", nil)
+	rec := httptest.NewRecorder()
+
+	if handled := AdmissionInterceptor(adm, next)(rec, req); !handled {
+		t.Fatal("expected handled")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if rec.Header().Get("Www-Authenticate") == "" {
+		t.Error("safe header Www-Authenticate should be relayed")
+	}
+	if strings.Contains(rec.Body.String(), "smuggled") {
+		t.Fatalf("error body must be dropped, got %s", rec.Body.String())
+	}
+}
+
+// B-1: a next (local/P2P) response with a non-200 success status is
+// likewise blocked instead of having its body relayed unchecked.
+func TestAdmissionInterceptor_Next206BodyNotRelayed(t *testing.T) {
+	malicious := []byte(`{"schemaVersion":2,"malicious":true}`)
+	adm := &fakeAdmitter{allowed: map[digest.Digest]bool{}}
+	next := func(w http.ResponseWriter, r *http.Request) bool {
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(malicious)
+		return true
+	}
+
+	req := httptest.NewRequest(http.MethodGet,
+		"http://registry.example.com/v2/library/app/manifests/latest", nil)
+	rec := httptest.NewRecorder()
+
+	if handled := AdmissionInterceptor(adm, next)(rec, req); !handled {
+		t.Fatal("expected handled")
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+	if strings.Contains(rec.Body.String(), "malicious") {
+		t.Fatalf("malicious body leaked to client: %s", rec.Body.String())
+	}
+}
+
+// M-1: a digest-shaped reference that fails to parse must fail closed
+// locally, never fall through to unchecked upstream forwarding.
+func TestAdmissionInterceptor_InvalidDigestFailClosed(t *testing.T) {
+	adm := &fakeAdmitter{allowed: map[digest.Digest]bool{}}
+	nextCalled := false
+	next := func(w http.ResponseWriter, r *http.Request) bool {
+		nextCalled = true
+		return false
+	}
+
+	req := httptest.NewRequest(http.MethodGet,
+		"http://registry.example.com/v2/library/app/manifests/sha256:zzzz-not-a-digest", nil)
+	rec := httptest.NewRecorder()
+
+	if handled := AdmissionInterceptor(adm, next)(rec, req); !handled {
+		t.Fatal("invalid digest reference must be handled locally (fail-closed)")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if nextCalled {
+		t.Fatal("next must not run for an unparseable digest reference")
 	}
 }

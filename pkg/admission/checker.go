@@ -10,6 +10,25 @@
 // The whitelist is fully loaded into memory, so verification keeps working
 // while the node is offline. The file is hot-reloaded by mtime polling; a
 // corrupt update keeps the previous table serving (fail-safe, not fail-open).
+//
+// # Multi-arch images
+//
+// Admission is a flat digest comparison with no manifest-type awareness:
+// pulling a multi-arch image fetches the image index first and then the
+// per-platform child manifest by its own digest, and each fetch is checked
+// independently. The whitelist must therefore contain BOTH the image index
+// digest AND every per-platform child manifest digest; whitelisting only
+// the index makes the child manifest pull fail with 403 DENIED. Automatic
+// admission of index children is intentionally not implemented.
+//
+// # Trust boundary
+//
+// The whitelist file itself is trusted content: its integrity is protected
+// by filesystem permissions and the configuration channel that writes it
+// (expected to be root-only), not by this package. The Signature field is
+// reserved but not verified in this release; table signature verification
+// is deferred to a follow-up ticket. As a guard, loading a file that is
+// writable by group or other emits a warning log.
 package admission
 
 import (
@@ -77,6 +96,15 @@ func (c *Checker) Reload() error {
 	fi, err := f.Stat()
 	if err != nil {
 		return err
+	}
+
+	// Trust boundary guard (M-3): the table's integrity relies on the file
+	// being writable only through the root-only configuration channel. A
+	// group/other-writable file weakens that boundary — alert but keep going.
+	if perm := fi.Mode().Perm(); perm&0o022 != 0 {
+		slog.Warn("admission whitelist is writable by group/other; table integrity relies on filesystem permissions",
+			"alert", "admission_whitelist_permissions",
+			"path", c.path, "mode", fmt.Sprintf("%04o", perm))
 	}
 
 	var wl Whitelist

@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -217,5 +218,108 @@ func TestOCIHandler_AdmissionChecksUpstreamFetchedManifest(t *testing.T) {
 	}
 	if code := decodeOCIErrorCode(t, rec.Body.Bytes()); code != "DENIED" {
 		t.Fatalf("error code = %q, want %q", code, "DENIED")
+	}
+}
+
+// B-1: a colluding upstream answering a tag GET with a non-200 success
+// status (e.g. 206) and a malicious manifest body must not have that body
+// relayed unchecked. Expect fail-closed with no body leak.
+func TestOCIHandler_AdmissionUpstream206BodyNotRelayed(t *testing.T) {
+	malicious := []byte(`{"schemaVersion":2,"malicious":true}`)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(malicious)
+	}))
+	defer upstream.Close()
+
+	store := newEmptyOCITestStore()
+	// Even whitelisting the malicious content must not help: only a
+	// verified 200 releases manifest bytes.
+	adm := &fakeAdmitter{allowed: map[digest.Digest]bool{digest.FromBytes(malicious): true}}
+	handler := NewOCIHandler(store,
+		WithUpstreamFallback(true),
+		WithUpstreamRegistry(upstream.URL),
+		WithAdmission(adm),
+	)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/app/manifests/latest", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusPartialContent || rec.Code == http.StatusOK {
+		t.Fatalf("status = %d, non-200 upstream success must be fail-closed", rec.Code)
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte("malicious")) {
+		t.Fatalf("malicious body leaked to client: %s", rec.Body.String())
+	}
+}
+
+// B-1: with admission enabled, upstream error responses relay status and
+// safe headers only; the body is dropped so no manifest content can ride
+// an error status.
+func TestOCIHandler_AdmissionUpstreamErrorBodyDropped(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Www-Authenticate", `Bearer realm="https://auth.example.com/token"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"schemaVersion":2,"smuggled":true}`))
+	}))
+	defer upstream.Close()
+
+	store := newEmptyOCITestStore()
+	adm := &fakeAdmitter{allowed: map[digest.Digest]bool{}}
+	handler := NewOCIHandler(store,
+		WithUpstreamFallback(true),
+		WithUpstreamRegistry(upstream.URL),
+		WithAdmission(adm),
+	)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/app/manifests/latest", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if rec.Header().Get("Www-Authenticate") == "" {
+		t.Error("safe header Www-Authenticate should be relayed")
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte("smuggled")) {
+		t.Fatalf("error body must be dropped, got %s", rec.Body.String())
+	}
+}
+
+// m-4: an upstream manifest exceeding the fetch size limit is fail-closed,
+// never buffered without bound or served.
+func TestOCIHandler_UpstreamManifestOversizeFailClosed(t *testing.T) {
+	huge := bytes.Repeat([]byte("a"), maxManifestFetchSize+1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(huge)
+	}))
+	defer upstream.Close()
+
+	store := newEmptyOCITestStore()
+	handler := NewOCIHandler(store,
+		WithUpstreamFallback(true),
+		WithUpstreamRegistry(upstream.URL),
+	)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/app/manifests/latest", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("status = %d, oversized manifest must not be served", rec.Code)
+	}
+	if rec.Body.Len() > 4096 {
+		t.Fatalf("oversized body leaked to client (%d bytes)", rec.Body.Len())
 	}
 }

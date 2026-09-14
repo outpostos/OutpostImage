@@ -47,7 +47,7 @@ type RegistryCmd struct {
 	CADir                    string   `arg:"--ca-dir,env:CA_DIR" default:"/etc/outpostimage" help:"Directory for CA certificate and key"`
 	InsecureRegistries       []string `arg:"--insecure-registry,env:INSECURE_REGISTRIES,separate" help:"Registries to connect without TLS verification (host:port or host)"`
 	RegistryUpstreamFallback bool     `arg:"--registry-upstream-fallback,env:REGISTRY_UPSTREAM_FALLBACK" default:"true" help:"Allow registry endpoint to fall back to upstream after local and P2P miss"`
-	AdmissionWhitelist       string   `arg:"--admission-whitelist,env:ADMISSION_WHITELIST" help:"Path to manifest digest whitelist JSON; empty disables admission"`
+	AdmissionWhitelist       string   `arg:"--admission-whitelist,env:ADMISSION_WHITELIST" help:"Path to manifest digest whitelist JSON; empty disables admission. The table must list image index digests AND all per-platform child manifest digests for multi-arch images"`
 	AdmissionPollInterval    string   `arg:"--admission-poll-interval,env:ADMISSION_POLL_INTERVAL" default:"10s" help:"Whitelist file poll interval for hot reload (Go duration)"`
 }
 
@@ -109,8 +109,11 @@ func run(cmd *RegistryCmd) error {
 	var admChecker *admission.Checker
 	if cmd.AdmissionWhitelist != "" {
 		interval, err := time.ParseDuration(cmd.AdmissionPollInterval)
-		if err != nil || interval <= 0 {
+		if err != nil {
 			return fmt.Errorf("invalid --admission-poll-interval %q: %w", cmd.AdmissionPollInterval, err)
+		}
+		if interval <= 0 {
+			return fmt.Errorf("invalid --admission-poll-interval %q: must be positive", cmd.AdmissionPollInterval)
 		}
 		admChecker, err = admission.NewChecker(cmd.AdmissionWhitelist)
 		if err != nil {
