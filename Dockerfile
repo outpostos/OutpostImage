@@ -1,5 +1,15 @@
+# Build:
+#   docker build --build-arg VERSION=<v> -t outpostimage:<tag> .
+# Optional: --build-arg GOPROXY=https://goproxy.cn,direct when proxy.golang.org
+# is unreachable (go.sum still verifies every module).
+#
+# Base images come from the risecloud namespace on Huawei SWR (public,
+# amd64+arm64), never directly from Docker Hub. Guarded by
+# deploy/docker/dockerfile_test.go.
+ARG SWR=swr.cn-east-3.myhuaweicloud.com/risecloud
+
 # Build stage
-FROM golang:1.25-alpine AS builder
+FROM ${SWR}/golang:1.25-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git make
@@ -7,6 +17,7 @@ RUN apk add --no-cache git make
 WORKDIR /build
 
 # Copy go mod files first for better caching
+ARG GOPROXY=https://proxy.golang.org,direct
 COPY go.mod go.sum ./
 RUN go mod download
 
@@ -18,7 +29,7 @@ ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X main.version=${VERSION}" -o outpostimage .
 
 # Runtime stage
-FROM alpine:3.19
+FROM ${SWR}/alpine:3.19
 
 # Install ca-certificates for HTTPS registry interception
 RUN apk add --no-cache ca-certificates tzdata

@@ -2,6 +2,12 @@
 
 All notable changes to OutpostImage are documented in this file.
 
+## Unreleased
+
+### Build
+
+- Dockerfile base images now come from Huawei SWR (`swr.cn-east-3.myhuaweicloud.com/risecloud`) instead of Docker Hub; `GOPROXY` is a build arg; `.dockerignore` excludes credential-like files; static guards in `deploy/docker`
+
 ## v1.1.1 (2026-08-19)
 
 ### Security

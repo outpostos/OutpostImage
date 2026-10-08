@@ -172,7 +172,13 @@ After starting, configure Docker to use the proxy as described in Section 1.
 git clone https://github.com/outpostos/outpostimage
 cd outpostimage
 docker build -t outpostimage:latest .
+# If proxy.golang.org is unreachable:
+#   docker build --build-arg GOPROXY=https://goproxy.cn,direct -t outpostimage:latest .
 ```
+
+Base images (`golang:1.25-alpine`, `alpine:3.19`) are pulled from the public
+`swr.cn-east-3.myhuaweicloud.com/risecloud` namespace (amd64+arm64), not from
+Docker Hub; `deploy/docker/dockerfile_test.go` enforces this.
 
 ---
 
