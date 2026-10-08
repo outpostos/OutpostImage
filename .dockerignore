@@ -37,3 +37,13 @@ setup-repo-and-pr.sh
 # OS files
 .DS_Store
 Thumbs.db
+
+# Credentials: the builder stage runs `COPY . .` and docker does not read
+# .gitignore, so stray key material must never reach the build context.
+# Guarded by deploy/docker/dockerfile_test.go.
+**/.ssh
+**/*.key
+**/*.pem
+**/id_rsa*
+**/id_ed25519*
+**/.env*
