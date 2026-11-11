@@ -126,6 +126,23 @@ make build         # 确认编译通过
 | 5.3 | 访问 Landing Page | `https://<project>.pages.dev/` 正常加载 |
 | 5.4 | 验证所有页面段落 | Hero、How It Works、Features、Test Results、Footer 均正常显示 |
 | 5.5 | 自定义域名验证（如有） | `https://<custom-domain>/` 正常加载，HTTPS 证书有效 |
+| 5.6 | 匿名外部可达性验证 | 未登录状态下，Landing Page 上的每条安装命令都可执行（见下节） |
+
+**匿名外部可达性**（发布准出门禁）:
+
+Landing Page 是公开页面，但其引用的仓库和镜像未必公开。必须在**未登录**状态下逐项验证：
+
+```bash
+# 仓库可匿名访问（期望 200；404 表示仓库仍为 private）
+curl -s -o /dev/null -w '%{http_code}\n' https://github.com/outpostos/outpostimage
+
+# 仓库可匿名 clone（期望成功；失败表示需要凭证）
+git ls-remote https://github.com/outpostos/outpostimage HEAD
+
+# 镜像可匿名拉取（期望成功；unauthorized 表示包仍为 private）
+docker logout ghcr.io
+docker pull ghcr.io/outpostos/outpostimage:latest
+```
 
 **故障排查**:
 
@@ -144,7 +161,7 @@ make build         # 确认编译通过
 | 步骤 | 操作 | 验收标准 |
 |------|------|----------|
 | 6.1 | Docker Image 构建 | GitHub Actions `Release` workflow 自动构建并推送到 `ghcr.io` |
-| 6.2 | 确认 GHCR 镜像可用 | `docker pull ghcr.io/outpostos/outpostimage:latest` 成功 |
+| 6.2 | 确认 GHCR 镜像可**匿名**拉取 | `docker logout ghcr.io` 后 `docker pull ghcr.io/outpostos/outpostimage:latest` 成功 |
 | 6.3 | 创建 GitHub Release（可选） | Tag 版本号，附 changelog 和二进制 |
 | 6.4 | 更新 README 版本信息 | Quick Start 中的版本号与 release 一致 |
 | 6.5 | 通知相关方 | 在 Paperclip 关闭发布 issue，评论发布结果 |
@@ -155,7 +172,9 @@ make build         # 确认编译通过
 - 推送到 `ghcr.io/outpostos/outpostimage`
 - Tag: `latest`, `main`, `sha-<commit>`
 
-**准出条件**: Docker image 可拉取，Landing page 在线，release issue 关闭
+> **GHCR 包可见性不会随仓库自动变化。** 由 private 仓库推送的镜像包默认是 private；即使仓库改为 public，也必须在 Package settings → Change visibility 手动把包设为 public。否则外部用户执行 Quick Start 会得到 `unauthorized`。
+
+**准出条件**: Docker image 可**匿名**拉取，Landing page 在线，release issue 关闭
 
 ---
 
@@ -179,9 +198,11 @@ Deployment:
 [ ] Cloudflare Pages 项目已关联 repo
 [ ] Build command 为空，output dir 为 site
 [ ] 部署成功，Landing page 在线可访问
+[ ] 匿名可访问仓库（curl 200 / git ls-remote 成功）
 
 Release:
 [ ] Docker image 已推送到 GHCR
+[ ] GHCR 包可见性为 public（`docker logout` 后仍可 pull）
 [ ] GitHub Release 已创建（如需要）
 [ ] 发布 issue 已关闭
 ```
@@ -195,3 +216,4 @@ Release:
 3. **Landing page 风格对齐** — 先参考同系列产品（OutpostNet），再动手开发，避免过度工程化后返工
 4. **测试报告用英文** — 技术产品面向国际社区，测试数据和性能指标统一使用英文
 5. **Cloudflare Pages vs Workers 区分** — `wrangler.toml` 会触发 Workers 自动检测，使用 `wrangler.jsonc` 配合 `assets` 字段更明确
+6. **公开页面不能指向私有产物** — 发布验证必须用匿名会话执行安装命令（`docker logout`、无凭证 clone）。登录态的 `docker pull` 成功会掩盖权限问题：仓库或 GHCR 包为 private 时，外部用户第一步就失败，而维护者本地验证一切正常
