@@ -126,23 +126,21 @@ make build         # 确认编译通过
 | 5.3 | 访问 Landing Page | `https://<project>.pages.dev/` 正常加载 |
 | 5.4 | 验证所有页面段落 | Hero、How It Works、Features、Test Results、Footer 均正常显示 |
 | 5.5 | 自定义域名验证（如有） | `https://<custom-domain>/` 正常加载，HTTPS 证书有效 |
-| 5.6 | 匿名外部可达性验证 | 未登录状态下，Landing Page 上的每条安装命令都可执行（见下节） |
+| 5.6 | 匿名仓库可达性验证 | 剥离本机凭证后，仓库可匿名读取（见下节）。镜像由 Phase 6 构建，故此处只验证仓库 |
 
-**匿名外部可达性**（发布准出门禁）:
+**匿名仓库可达性**（发布准出门禁）:
 
-Landing Page 是公开页面，但其引用的仓库和镜像未必公开。必须在**未登录**状态下逐项验证：
+Landing Page 是公开页面，但其引用的仓库未必公开。必须在**剥离本机凭证**的状态下验证——本机已 `gh auth login` 或配置了 credential helper 时，普通 `git ls-remote` 会用存储凭证成功，从而掩盖私有仓库的问题：
 
 ```bash
 # 仓库可匿名访问（期望 200；404 表示仓库仍为 private）
 curl -s -o /dev/null -w '%{http_code}\n' https://github.com/outpostos/outpostimage
 
-# 仓库可匿名 clone（期望成功；失败表示需要凭证）
-git ls-remote https://github.com/outpostos/outpostimage HEAD
-
-# 镜像可匿名拉取（期望成功；unauthorized 表示包仍为 private）
-docker logout ghcr.io
-docker pull ghcr.io/outpostos/outpostimage:latest
+# 仓库可匿名读取：禁用交互提示并清空 credential helper（期望成功；要求凭证即失败）
+GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote https://github.com/outpostos/outpostimage HEAD
 ```
+
+> **若产品决定保持私有**（第 6 阶段选项 b）：不要跳过本门禁，而应从公开 Landing Page 移除对应的 `git clone` / 镜像拉取安装命令，改为「联系获取」等表述。门禁验证的是「页面宣传的东西外部用户确实拿得到」，私有本身不是失败，公开宣传私有产物才是。
 
 **故障排查**:
 
@@ -150,7 +148,7 @@ docker pull ghcr.io/outpostos/outpostimage:latest
 - **部署成功但内容未更新**: 清除 Cloudflare CDN 缓存，或等待几分钟自动刷新
 - **Build command 报错**: 确认 build command 为空（纯静态站），不要使用 `npx wrangler deploy`
 
-**准出条件**: Landing page 在线可访问，内容与 `main` 分支一致
+**准出条件**: Landing page 在线且内容与 `main` 分支一致，仓库可匿名读取
 
 ---
 
@@ -161,10 +159,18 @@ docker pull ghcr.io/outpostos/outpostimage:latest
 | 步骤 | 操作 | 验收标准 |
 |------|------|----------|
 | 6.1 | Docker Image 构建 | GitHub Actions `Release` workflow 自动构建并推送到 `ghcr.io` |
-| 6.2 | 确认 GHCR 镜像可**匿名**拉取 | `docker logout ghcr.io` 后 `docker pull ghcr.io/outpostos/outpostimage:latest` 成功 |
-| 6.3 | 创建 GitHub Release（可选） | Tag 版本号，附 changelog 和二进制 |
-| 6.4 | 更新 README 版本信息 | Quick Start 中的版本号与 release 一致 |
+| 6.2 | 确认 GHCR 镜像可**匿名**拉取 | 使用空 Docker 配置拉取最新 tag 成功（见下） |
+| 6.3 | 创建 GitHub Release（可选） | Tag 版本号，附 changelog |
+| 6.4 | 更新 README 安装信息 | Quick Start 中的镜像 tag 与 release 一致 |
 | 6.5 | 通知相关方 | 在 Paperclip 关闭发布 issue，评论发布结果 |
+
+**匿名镜像拉取**（Phase 6.2，必须在 6.1 推送完成之后执行）:
+
+5.6 只验证仓库可达；镜像在 6.1 才构建推送，因此镜像可达性必须在此处验证。`docker logout` 在不同 credential store 下未必彻底，使用一个空的 `DOCKER_CONFIG` 目录确保不带任何本机凭证：
+
+```bash
+DOCKER_CONFIG=$(mktemp -d) docker pull ghcr.io/outpostos/outpostimage:latest
+```
 
 **Docker Release 流水线** (自动，push to `main` 触发):
 
@@ -198,11 +204,11 @@ Deployment:
 [ ] Cloudflare Pages 项目已关联 repo
 [ ] Build command 为空，output dir 为 site
 [ ] 部署成功，Landing page 在线可访问
-[ ] 匿名可访问仓库（curl 200 / git ls-remote 成功）
+[ ] 仓库可匿名读取（curl 200 / `GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote` 成功）
 
 Release:
 [ ] Docker image 已推送到 GHCR
-[ ] GHCR 包可见性为 public（`docker logout` 后仍可 pull）
+[ ] GHCR 包可见性为 public（空 `DOCKER_CONFIG` 下仍可 pull）
 [ ] GitHub Release 已创建（如需要）
 [ ] 发布 issue 已关闭
 ```
@@ -216,4 +222,4 @@ Release:
 3. **Landing page 风格对齐** — 先参考同系列产品（OutpostNet），再动手开发，避免过度工程化后返工
 4. **测试报告用英文** — 技术产品面向国际社区，测试数据和性能指标统一使用英文
 5. **Cloudflare Pages vs Workers 区分** — `wrangler.toml` 会触发 Workers 自动检测，使用 `wrangler.jsonc` 配合 `assets` 字段更明确
-6. **公开页面不能指向私有产物** — 发布验证必须用匿名会话执行安装命令（`docker logout`、无凭证 clone）。登录态的 `docker pull` 成功会掩盖权限问题：仓库或 GHCR 包为 private 时，外部用户第一步就失败，而维护者本地验证一切正常
+6. **公开页面不能指向私有产物** — 发布验证必须在**剥离本机凭证**的会话中执行安装命令：仓库检查用 `GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote`，镜像检查用空的 `DOCKER_CONFIG`。登录态的 `pull` / 带 credential helper 的 `ls-remote` 成功会掩盖权限问题：仓库或 GHCR 包为 private 时，外部用户第一步就失败，而维护者本地验证一切正常
