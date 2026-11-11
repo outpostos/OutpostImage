@@ -140,7 +140,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://github.com/outpostos/outpostima
 GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote https://github.com/outpostos/outpostimage HEAD
 ```
 
-> **若产品决定保持私有**（第 6 阶段选项 b）：不要跳过本门禁，而应从公开 Landing Page 移除对应的 `git clone` / 镜像拉取安装命令，改为「联系获取」等表述。门禁验证的是「页面宣传的东西外部用户确实拿得到」，私有本身不是失败，公开宣传私有产物才是。
+> **若产品决定保持私有**：不要跳过本门禁，而应从公开 Landing Page 移除对应的 `git clone` / 镜像拉取安装命令，改为「联系获取」等表述。门禁验证的是「页面宣传的东西外部用户确实拿得到」，私有本身不是失败，公开宣传私有产物才是。
 
 **故障排查**:
 
