@@ -10,6 +10,9 @@ outpostimage-*
 depot/
 setup-repo-and-pr.sh
 
+# Local peer lists contain internal addresses
+peers.txt
+
 # IDE
 .idea/
 .vscode/

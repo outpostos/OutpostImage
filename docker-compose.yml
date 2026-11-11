@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   outpostimage:
     build:
@@ -18,15 +16,18 @@ services:
       - /var/lib/docker:/var/lib/docker:ro
       # Persist CA certificates
       - outpostimage-ca:/etc/outpostimage
-      # Optional: peers file for hot-reload
-      - ./peers.txt:/etc/outpostimage/peers.txt:ro
+      # Optional: static peers file for hot-reload. Uncomment both this mount
+      # and PEERS_FILE below only after creating ./peers.txt — a missing file
+      # makes the container exit at startup, and Docker would silently create
+      # a directory at that path.
+      # - ./peers.txt:/etc/outpostimage/peers.txt:ro
     environment:
       - LOG_LEVEL=INFO
       - REGISTRY_ADDR=:5000
       - PROXY_ADDR=:3128
       - METRICS_ADDR=:9090
       - DOCKER_ROOT=/var/lib/docker
-      - PEERS_FILE=/etc/outpostimage/peers.txt
+      # - PEERS_FILE=/etc/outpostimage/peers.txt  # see the peers volume above
       - CA_DIR=/etc/outpostimage
     restart: unless-stopped
     healthcheck:
