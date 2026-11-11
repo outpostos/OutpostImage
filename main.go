@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -79,12 +80,12 @@ func (Args) Version() string {
 }
 
 func main() {
-	os.Exit(entrypoint(os.Args[1:], os.Stderr))
+	os.Exit(entrypoint(os.Args[1:], os.Stdout, os.Stderr))
 }
 
 // entrypoint is the testable core of main: parses args and calls run.
-// Returns 0 on success, 1 on any error or missing subcommand.
-func entrypoint(args []string, stderr io.Writer) int {
+// Returns 0 on success (including --help/--version), 1 on any error or missing subcommand.
+func entrypoint(args []string, stdout, stderr io.Writer) int {
 	var a Args
 	p, err := argNewParser(arg.Config{Out: stderr}, &a)
 	if err != nil {
@@ -92,7 +93,16 @@ func entrypoint(args []string, stderr io.Writer) int {
 		return 1
 	}
 	if err := p.Parse(args); err != nil {
-		return 1
+		switch {
+		case errors.Is(err, arg.ErrVersion):
+			fmt.Fprintln(stdout, a.Version())
+			return 0
+		case errors.Is(err, arg.ErrHelp):
+			p.WriteHelp(stdout)
+			return 0
+		default:
+			return 1
+		}
 	}
 
 	if a.Registry == nil {

@@ -55,12 +55,16 @@ P2P OCI image distribution proxy for edge computing. OutpostImage turns every ed
 
 ## Quick Start
 
-### Binary
+### Build from source
+
+Released artifacts are container images only. To run the binary directly, build it
+with Go 1.25+:
 
 ```bash
-# Download the latest release binary (v1.0.0+)
-curl -L https://github.com/outpostos/OutpostImage/releases/latest/download/outpostimage-linux-amd64 \
-  -o /usr/local/bin/outpostimage && chmod +x /usr/local/bin/outpostimage
+git clone https://github.com/outpostos/outpostimage
+cd outpostimage
+make build
+sudo install -m 0755 bin/outpostimage /usr/local/bin/outpostimage
 
 # Run with defaults (auto-detects Docker or containerd store)
 outpostimage registry

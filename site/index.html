@@ -688,9 +688,10 @@ Redis server v=7.4.7</code></pre>
     </div>
 
     <div id="tab-binary" class="tab-panel active">
-      <pre><code><span class="comment"># Download the latest binary</span>
-curl -L https://github.com/outpostos/outpostimage/releases/latest/download/outpostimage-linux-amd64 \
-  -o /usr/local/bin/outpostimage &amp;&amp; chmod +x /usr/local/bin/outpostimage
+      <pre><code><span class="comment"># Build from source (Go 1.25+)</span>
+git clone https://github.com/outpostos/outpostimage
+cd outpostimage &amp;&amp; make build
+sudo install -m 0755 bin/outpostimage /usr/local/bin/outpostimage
 
 <span class="comment"># Run with defaults (auto-detects Docker or containerd store)</span>
 <span class="cmd">outpostimage registry</span>
@@ -705,7 +706,7 @@ curl -L https://github.com/outpostos/outpostimage/releases/latest/download/outpo
   --network host \
   -v /var/lib/docker:/var/lib/docker:ro \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
-  outpostimage:latest registry</code></pre>
+  ghcr.io/outpostos/outpostimage:latest registry</code></pre>
     </div>
 
     <div id="tab-compose" class="tab-panel">
@@ -720,12 +721,12 @@ echo "192.168.1.102:5000" &gt;&gt; peers.txt
     </div>
 
     <div id="tab-kubernetes" class="tab-panel">
-      <pre><code><span class="comment"># Add the OutpostImage Helm chart repo</span>
-helm repo add outpostimage https://outpostos.github.io/outpostimage
-helm repo update
+      <pre><code><span class="comment"># Clone the repo — the chart ships in charts/outpostimage</span>
+git clone https://github.com/outpostos/outpostimage
+cd outpostimage
 
 <span class="comment"># Deploy as a DaemonSet — Kubernetes Endpoints auto-discovery enabled by default</span>
-<span class="cmd">helm install outpostimage outpostimage/outpostimage \
+<span class="cmd">helm install outpostimage ./charts/outpostimage \
   --namespace outpostimage --create-namespace</span>
 
 <span class="comment"># Verify the DaemonSet is running on all nodes</span>
