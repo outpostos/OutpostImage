@@ -13,11 +13,15 @@
 
 ### Install the binary
 
+Releases publish a container image (`ghcr.io/outpostos/outpostimage:latest`), not
+standalone binaries. For a bare-metal install, build the binary from source with
+Go 1.25+:
+
 ```bash
-# Download latest release
-curl -L https://github.com/outpostos/outpostimage/releases/latest/download/outpostimage-linux-amd64 \
-  -o /usr/local/bin/outpostimage
-chmod +x /usr/local/bin/outpostimage
+git clone https://github.com/outpostos/outpostimage
+cd outpostimage
+make build
+sudo install -m 0755 bin/outpostimage /usr/local/bin/outpostimage
 
 # Verify
 outpostimage --version
@@ -139,7 +143,7 @@ docker run -d \
   -v outpostimage-ca:/etc/outpostimage \
   -e LOG_LEVEL=INFO \
   -e PEERS=192.168.1.101:5000,192.168.1.102:5000 \
-  outpostimage:latest registry
+  ghcr.io/outpostos/outpostimage:latest registry
 ```
 
 ### Multi-node (Docker Compose)
