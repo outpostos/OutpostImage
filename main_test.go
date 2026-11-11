@@ -461,7 +461,7 @@ func TestEntrypoint_ParserCreationFails(t *testing.T) {
 	t.Cleanup(func() { argNewParser = old })
 
 	var buf bytes.Buffer
-	code := entrypoint([]string{"registry"}, &buf)
+	code := entrypoint([]string{"registry"}, &buf, &buf)
 	if code != 1 {
 		t.Fatalf("expected exit code 1 when NewParser fails, got %d", code)
 	}
@@ -474,7 +474,7 @@ func TestEntrypoint_ParserCreationFails(t *testing.T) {
 // subcommand is provided (the "registry" subcommand is missing).
 func TestEntrypoint_NoSubcommand(t *testing.T) {
 	var buf bytes.Buffer
-	code := entrypoint([]string{}, &buf)
+	code := entrypoint([]string{}, &buf, &buf)
 	if code != 1 {
 		t.Fatalf("expected exit code 1, got %d", code)
 	}
@@ -487,9 +487,33 @@ func TestEntrypoint_NoSubcommand(t *testing.T) {
 // TestEntrypoint_UnknownFlag verifies that entrypoint returns 1 for unknown flags.
 func TestEntrypoint_UnknownFlag(t *testing.T) {
 	var buf bytes.Buffer
-	code := entrypoint([]string{"--unknown-flag=yes"}, &buf)
+	code := entrypoint([]string{"--unknown-flag=yes"}, &buf, &buf)
 	if code != 1 {
 		t.Fatalf("expected exit code 1 for unknown flag, got %d", code)
+	}
+}
+
+// TestEntrypoint_Version verifies --version prints the version and exits 0.
+func TestEntrypoint_Version(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := entrypoint([]string{"--version"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "outpostimage") {
+		t.Fatalf("expected version string on stdout, got %q", stdout.String())
+	}
+}
+
+// TestEntrypoint_Help verifies --help prints usage and exits 0.
+func TestEntrypoint_Help(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := entrypoint([]string{"--help"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Usage") {
+		t.Fatalf("expected usage text on stdout, got %q", stdout.String())
 	}
 }
 
@@ -518,7 +542,7 @@ func TestEntrypoint_RegistrySuccess(t *testing.T) {
 			"--k8s-discovery=false",
 			"--log-level=ERROR",
 			"--ca-dir=" + t.TempDir(),
-		}, &buf)
+		}, &buf, &buf)
 		done <- code
 	}()
 
@@ -551,7 +575,7 @@ func TestEntrypoint_RunError(t *testing.T) {
 	t.Cleanup(func() { runFn = origRun })
 
 	var buf bytes.Buffer
-	code := entrypoint([]string{"registry"}, &buf)
+	code := entrypoint([]string{"registry"}, &buf, &buf)
 	if code != 1 {
 		t.Fatalf("expected exit code 1 when run() errors, got %d", code)
 	}
