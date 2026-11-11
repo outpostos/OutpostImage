@@ -157,6 +157,8 @@ cat > peers.txt <<EOF
 192.168.1.103:5000
 EOF
 
+# Enable the static peer list: uncomment the peers volume mount and the
+# PEERS_FILE environment entry in docker-compose.yml
 docker compose up -d
 ```
 

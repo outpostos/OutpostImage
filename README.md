@@ -86,7 +86,9 @@ docker run -d \
 git clone https://github.com/outpostos/outpostimage
 cd outpostimage
 
-# Optional: create peers.txt with other node addresses
+# Optional: static peer list. Nodes find each other via mDNS by default.
+# To use a static list, create peers.txt, then uncomment the peers volume
+# and PEERS_FILE entry in docker-compose.yml.
 echo "192.168.1.101:5000" > peers.txt
 echo "192.168.1.102:5000" >> peers.txt
 
