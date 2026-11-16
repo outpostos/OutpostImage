@@ -132,16 +132,19 @@ make build         # 确认编译通过
 
 Landing Page 是公开页面，但其引用的仓库未必公开。必须在**剥离本机凭证**的状态下验证——本机已 `gh auth login` 或配置了 credential helper 时，普通 `git ls-remote` 会用存储凭证成功，从而掩盖私有仓库的问题。
 
-> 仅 `git -c credential.helper=` **不够**：它只清空 credential helper，但 `url.<base>.insteadOf` 重写可能已把 token 直接嵌进 URL（例如 `url.https://user:ghp_xxx@github.com/.insteadOf = https://github.com/`），此时 git 根本不需要 helper 就已带上凭证，门禁会在私有仓库上**假通过**。必须让 git 完全忽略本机/系统配置。
+> 仅 `git -c credential.helper=` **不够**：它只清空 credential helper，但 `url.<base>.insteadOf` 重写可能已把 token 直接嵌进 URL（例如 `url.https://user:ghp_xxx@github.com/.insteadOf = https://github.com/`），此时 git 根本不需要 helper 就已带上凭证，门禁会在私有仓库上**假通过**。
+>
+> `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1` 只能隔离 **global + system** 配置，**不能**屏蔽当前仓库的 `.git/config`——repo-local 的 `insteadOf` 仍会生效，因此门禁还必须在**空目录**中运行（`git -C "$(mktemp -d)"`），让 git 发现不到任何仓库，从而不读取 repo-local 配置。global/system 隔离与空目录缺一不可。
 
 ```bash
 # 仓库可匿名访问（期望 200；404 表示仓库仍为 private）
 curl -s -o /dev/null -w '%{http_code}\n' https://github.com/outpostos/outpostimage
 
-# 仓库可匿名读取：隔离全局/系统 git 配置（无 insteadOf、无 helper、无 proxy）并禁用交互提示
+# 仓库可匿名读取：隔离 global/system git 配置（无 insteadOf、无 helper、无 proxy）并禁用交互提示，
+# 同时在空目录中运行以避开仓库 local 配置（repo-local 的 insteadOf 也可能注入 token）
 # （期望成功；任何要求凭证即为失败）
 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
-  git ls-remote https://github.com/outpostos/outpostimage HEAD
+  git -C "$(mktemp -d)" ls-remote https://github.com/outpostos/outpostimage HEAD
 ```
 
 > **若产品决定保持私有**：不要跳过本门禁，而应从公开 Landing Page 移除对应的 `git clone` / 镜像拉取安装命令，改为「联系获取」等表述。门禁验证的是「页面宣传的东西外部用户确实拿得到」，私有本身不是失败，公开宣传私有产物才是。
@@ -208,7 +211,7 @@ Deployment:
 [ ] Cloudflare Pages 项目已关联 repo
 [ ] Build command 为空，output dir 为 site
 [ ] 部署成功，Landing page 在线可访问
-[ ] 仓库可匿名读取（curl 200 / `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 git ls-remote` 成功）
+[ ] 仓库可匿名读取（curl 200 / `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 git -C "$(mktemp -d)" ls-remote` 成功）
 
 Release:
 [ ] Docker image 已推送到 GHCR
@@ -226,4 +229,4 @@ Release:
 3. **Landing page 风格对齐** — 先参考同系列产品（OutpostNet），再动手开发，避免过度工程化后返工
 4. **测试报告用英文** — 技术产品面向国际社区，测试数据和性能指标统一使用英文
 5. **Cloudflare Pages vs Workers 区分** — `wrangler.toml` 会触发 Workers 自动检测，使用 `wrangler.jsonc` 配合 `assets` 字段更明确
-6. **公开页面不能指向私有产物** — 发布验证必须在**剥离本机凭证**的会话中执行安装命令：仓库检查用 `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 git ls-remote`（隔离全部本机 git 配置），镜像检查用空的 `DOCKER_CONFIG`。仅 `-c credential.helper=` 不足：`url.<base>.insteadOf` 重写会把 token 嵌进 URL，令私有仓库上的门禁假通过。登录态的 `pull` / 带凭证的 `ls-remote` 成功会掩盖权限问题：仓库或 GHCR 包为 private 时，外部用户第一步就失败，而维护者本地验证一切正常
+6. **公开页面不能指向私有产物** — 发布验证必须在**剥离本机凭证**的会话中执行安装命令：仓库检查用 `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 git -C "$(mktemp -d)" ls-remote`（隔离 global/system 配置，并在空目录运行以避开 repo-local 配置），镜像检查用空的 `DOCKER_CONFIG`。仅 `-c credential.helper=` 不足：`url.<base>.insteadOf` 重写会把 token 嵌进 URL，令私有仓库上的门禁假通过；环境变量又只屏蔽 global/system 配置，仓库自身 `.git/config` 仍会被读取，故还必须在空目录中运行。登录态的 `pull` / 带凭证的 `ls-remote` 成功会掩盖权限问题：仓库或 GHCR 包为 private 时，外部用户第一步就失败，而维护者本地验证一切正常
