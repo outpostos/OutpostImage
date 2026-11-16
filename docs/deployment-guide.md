@@ -13,9 +13,8 @@
 
 ### Install the binary
 
-Releases publish a container image (`ghcr.io/outpostos/outpostimage:latest`), not
-standalone binaries. For a bare-metal install, build the binary from source with
-Go 1.25+:
+Releases are distributed as source, not standalone binaries. For a bare-metal
+install, build the binary from source with Go 1.25+:
 
 ```bash
 git clone https://github.com/outpostos/outpostimage
@@ -198,13 +197,24 @@ Docker Hub; `deploy/docker/dockerfile_test.go` enforces this.
 
 ### Install via Helm
 
+The chart's default image (`ghcr.io/outpostos/outpostimage`) is in a currently
+private GHCR package, so an anonymous cluster cannot pull it. Build the image
+locally, make it available on every node's container runtime, then install the
+chart pointing at the local tag:
+
 ```bash
-# Add the chart (replace with actual chart repo when published)
+docker build -t outpostimage:latest .
+
 helm install outpostimage ./charts/outpostimage \
   --namespace outpostimage \
   --create-namespace \
-  --set config.logLevel=INFO
+  --set config.logLevel=INFO \
+  --set image.repository=outpostimage \
+  --set image.tag=latest \
+  --set image.pullPolicy=Never
 ```
+
+Or set `image.repository` to a registry you control and keep a normal pull policy.
 
 ### Configure peers via values.yaml
 
