@@ -1,4 +1,7 @@
 image:
+  # This package is currently private; anonymous clusters cannot pull it. Build
+  # locally (docker build -t outpostimage:latest .), make the image available on
+  # every node, and override: --set image.repository=outpostimage --set image.pullPolicy=Never
   repository: ghcr.io/outpostos/outpostimage
   tag: latest
   pullPolicy: IfNotPresent

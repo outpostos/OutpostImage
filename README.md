@@ -57,8 +57,8 @@ P2P OCI image distribution proxy for edge computing. OutpostImage turns every ed
 
 ### Build from source
 
-Released artifacts are container images only. To run the binary directly, build it
-with Go 1.25+:
+Releases are distributed as source. To run the binary directly (or build the
+image), build it with Go 1.25+:
 
 ```bash
 git clone https://github.com/outpostos/outpostimage
@@ -182,10 +182,22 @@ See [docs/api-reference.md](docs/api-reference.md) for full API documentation.
 
 ## Kubernetes Deployment (Helm)
 
+The chart's default image (`ghcr.io/outpostos/outpostimage`) lives in a currently
+private GHCR package, so an anonymous cluster cannot pull it. Build the image
+locally, make it available on every node's container runtime, then point the
+chart at the local tag:
+
 ```bash
+docker build -t outpostimage:latest .
+
 helm install outpostimage charts/outpostimage \
-  --namespace outpostimage --create-namespace
+  --namespace outpostimage --create-namespace \
+  --set image.repository=outpostimage \
+  --set image.tag=latest \
+  --set image.pullPolicy=Never
 ```
+
+Or set `image.repository` to a registry you control and keep a normal pull policy.
 
 By default, the chart:
 - Deploys a DaemonSet on every node

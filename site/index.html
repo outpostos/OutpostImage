@@ -730,9 +730,16 @@ echo "192.168.1.102:5000" &gt;&gt; peers.txt
 git clone https://github.com/outpostos/outpostimage
 cd outpostimage
 
+<span class="comment"># Build locally AND make outpostimage:latest available on every node's runtime —</span>
+<span class="comment"># the default ghcr.io image is in a private package that anonymous clusters cannot pull</span>
+docker build -t outpostimage:latest .
+
 <span class="comment"># Deploy as a DaemonSet — Kubernetes Endpoints auto-discovery enabled by default</span>
 <span class="cmd">helm install outpostimage ./charts/outpostimage \
-  --namespace outpostimage --create-namespace</span>
+  --namespace outpostimage --create-namespace \
+  --set image.repository=outpostimage \
+  --set image.tag=latest \
+  --set image.pullPolicy=Never</span>
 
 <span class="comment"># Verify the DaemonSet is running on all nodes</span>
 kubectl -n outpostimage get daemonset
