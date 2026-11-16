@@ -75,13 +75,19 @@ outpostimage registry --peers node2:5000 --peers node3:5000
 
 ### Docker
 
+The container image is built locally (the GHCR package is currently private):
+
 ```bash
+git clone https://github.com/outpostos/outpostimage
+cd outpostimage
+docker build -t outpostimage:latest .
+
 docker run -d \
   --name outpostimage \
   --network host \
   -v /var/lib/docker:/var/lib/docker:ro \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
-  ghcr.io/outpostos/outpostimage:latest registry
+  outpostimage:latest registry
 ```
 
 ### Docker Compose

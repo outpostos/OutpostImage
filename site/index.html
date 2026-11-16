@@ -701,12 +701,17 @@ sudo install -m 0755 bin/outpostimage /usr/local/bin/outpostimage
     </div>
 
     <div id="tab-docker" class="tab-panel">
-      <pre><code>docker run -d \
+      <pre><code><span class="comment"># Build the image locally (the GHCR package is currently private)</span>
+git clone https://github.com/outpostos/outpostimage
+cd outpostimage
+docker build -t outpostimage:latest .
+
+<span class="cmd">docker run -d \
   --name outpostimage \
   --network host \
   -v /var/lib/docker:/var/lib/docker:ro \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
-  ghcr.io/outpostos/outpostimage:latest registry</code></pre>
+  outpostimage:latest registry</span></code></pre>
     </div>
 
     <div id="tab-compose" class="tab-panel">

@@ -133,7 +133,13 @@ docker pull nginx:latest
 
 ### Single node (Docker run)
 
+The container image is built locally (the GHCR package is currently private):
+
 ```bash
+git clone https://github.com/outpostos/outpostimage
+cd outpostimage
+docker build -t outpostimage:latest .
+
 docker run -d \
   --name outpostimage \
   --network host \
@@ -143,7 +149,7 @@ docker run -d \
   -v outpostimage-ca:/etc/outpostimage \
   -e LOG_LEVEL=INFO \
   -e PEERS=192.168.1.101:5000,192.168.1.102:5000 \
-  ghcr.io/outpostos/outpostimage:latest registry
+  outpostimage:latest registry
 ```
 
 ### Multi-node (Docker Compose)
